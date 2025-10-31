@@ -2,10 +2,13 @@
 Toolbar component for SAM Annotator
 Replicates the functionality of the React Toolbar component
 """
+import os
+import re
 from typing import Literal, Optional
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import Qt, Signal, QSize, QByteArray
+from PySide6.QtGui import QColor, QIcon, QPixmap, QPainter
+from PySide6.QtSvg import QSvgRenderer
 from frontend.theme import (
     ITEM_BG, ITEM_BORDER, TEXT_COLOR, TOPBAR_TEXT_MUTED,
     PRIMARY_COLOR, PRIMARY_HOVER, PRIMARY_PRESSED
@@ -14,12 +17,55 @@ from frontend.theme import (
 # Tool type definition
 Tool = Literal["select", "point", "box", "brush", "erase", "pan", "segment"]
 
-# Tool definitions with icons (using Unicode/emoji symbols)
+# Get the directory of this file to resolve icon paths
+_ICON_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "icons")
+
+
+def create_white_svg_icon(svg_path: str) -> QIcon:
+    """Load SVG file and create a white-colored version as QIcon"""
+    try:
+        with open(svg_path, 'r', encoding='utf-8') as f:
+            svg_content = f.read()
+        
+        # Replace stroke colors with white
+        # Match stroke:#... in CSS styles (e.g., stroke:#020202;)
+        svg_content = re.sub(r'stroke:#[0-9a-fA-F]{3,6}', 'stroke:#ffffff', svg_content)
+        # Match stroke="..." attributes
+        svg_content = re.sub(r'stroke="[^"]*"', 'stroke="#ffffff"', svg_content)
+        
+        # Replace fill colors with white (except for fill="none" or fill:none)
+        # Match fill:#... in CSS styles (but not fill:none)
+        svg_content = re.sub(r'fill:#([0-9a-fA-F]{3,6})(?!\s*none)', 'fill:#ffffff', svg_content)
+        # Match fill="..." attributes (but not fill="none")
+        svg_content = re.sub(r'fill="(?!none)[^"]*"', 'fill="#ffffff"', svg_content)
+        
+        # Also replace any color: attributes in CSS
+        svg_content = re.sub(r'color:#[0-9a-fA-F]{3,6}', 'color:#ffffff', svg_content)
+        
+        # Create QIcon from modified SVG content using QSvgRenderer
+        svg_bytes = QByteArray(svg_content.encode('utf-8'))
+        renderer = QSvgRenderer(svg_bytes)
+        if renderer.isValid():
+            pixmap = QPixmap(24, 24)
+            pixmap.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(pixmap)
+            renderer.render(painter)
+            painter.end()
+            icon = QIcon(pixmap)
+            return icon
+        else:
+            # Fallback to loading SVG as-is
+            return QIcon(svg_path)
+    except Exception:
+        # Fallback to loading SVG as-is
+        return QIcon(svg_path)
+
+# Tool definitions with icons (SVG file paths or emoji fallback)
 TOOLS = [
-    {"id": "segment", "icon": "✂", "label": "Segment", "shortcut": "S"},
-    {"id": "brush", "icon": "🖌", "label": "Brush", "shortcut": "B"},
-    {"id": "pan", "icon": "✋", "label": "Pan", "shortcut": "H"},
-    {"id": "fit_bbox", "icon": "⬜", "label": "Fit to Bounding Box", "shortcut": "F"},
+    {"id": "segment", "icon": os.path.join(_ICON_DIR, "line-segments-fill-svgrepo-com.svg"), "label": "Segment", "shortcut": "S"},
+    {"id": "brush", "icon": os.path.join(_ICON_DIR, "draw-svgrepo-com.svg"), "label": "Brush", "shortcut": "B"},
+    {"id": "pan", "icon": os.path.join(_ICON_DIR, "pan-cursor-svgrepo-com.svg"), "label": "Pan", "shortcut": "H"},
+    {"id": "fit_bbox", "icon": os.path.join(_ICON_DIR, "resize-svgrepo-com.svg"), "label": "Fit to Bounding Box", "shortcut": "F"},
 ]
 
 
@@ -31,9 +77,18 @@ class ToolButton(QPushButton):
         self.label = label
         self.shortcut = shortcut
         self._is_active = False
+        self._icon_path = icon if os.path.isfile(icon) else None
         
         # Set button properties
-        self.setText(icon)
+        if self._icon_path:
+            # Use SVG icon (colored white)
+            icon_obj = create_white_svg_icon(self._icon_path)
+            self.setIcon(icon_obj)
+            self.setIconSize(QSize(24, 24))  # 24x24 icon size
+        else:
+            # Use emoji/text fallback
+            self.setText(icon)
+        
         self.setFixedSize(48, 48)  # w-12 h-12 = 48px
         self.setToolTip(f"{label}\n{shortcut}")
         
@@ -49,6 +104,7 @@ class ToolButton(QPushButton):
         """Update button style based on active state"""
         if self._is_active:
             # Active state: primary color background
+            # For SVG icons, we need to set icon color via stylesheet
             style = f"""
                 QPushButton {{
                     background-color: {PRIMARY_COLOR};
@@ -64,6 +120,12 @@ class ToolButton(QPushButton):
                     background-color: {PRIMARY_PRESSED};
                 }}
             """
+            # Update icon color for SVG icons
+            if self._icon_path:
+                # Reload icon with white color for active state
+                # Note: Qt doesn't directly support icon color changes via stylesheet for SVG
+                # We'll keep the SVG as-is, or could use a colored variant
+                pass
         else:
             # Inactive state: transparent with hover
             style = f"""
