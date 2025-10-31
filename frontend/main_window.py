@@ -8,7 +8,7 @@ import shutil
 import xml.etree.ElementTree as ET
 import hashlib
 from typing import Optional, List, Dict, Tuple
-from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFrame, QMessageBox
+from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFrame, QMessageBox, QApplication
 from PySide6.QtGui import QKeySequence, QShortcut
 import cv2
 import numpy as np
@@ -584,12 +584,15 @@ class MainWindow(QMainWindow):
             image_path: Path to image file
             segments: List of (mask, label_id) tuples
         """
-        # Load image to get dimensions
-        img = cv2.imread(image_path)
-        if img is None:
-            return False
-        
-        h, w = img.shape[:2]
+        # Load image to get dimensions (or use from image_view if available)
+        h, w = None, None
+        if hasattr(self.image_view, 'base_image') and self.image_view.base_image is not None:
+            h, w = self.image_view.base_image.shape[:2]
+        else:
+            img = cv2.imread(image_path)
+            if img is None:
+                return False
+            h, w = img.shape[:2]
         
         # Load input objects if available
         input_objects = self._load_input_objects(self.current_xml_path)
@@ -667,19 +670,15 @@ class MainWindow(QMainWindow):
                     label_name = label["name"]
                     break
             
-            # Calculate bounding box from mask
-            from segmentation.sam_utils import mask_to_rle
-            rle = mask_to_rle(mask)
-            bbox = mask_utils.toBbox({
-                "size": [h, w],
-                "counts": rle["counts"].encode() if isinstance(rle["counts"], str) else rle["counts"]
-            }).tolist()
-            
-            x, y, bbox_w, bbox_h = bbox
-            seg_xmin = int(x)
-            seg_ymin = int(y)
-            seg_xmax = int(x + bbox_w)
-            seg_ymax = int(y + bbox_h)
+            # Calculate bounding box directly from mask (faster than RLE conversion)
+            rows = np.any(mask, axis=1)
+            cols = np.any(mask, axis=0)
+            if rows.any() and cols.any():
+                seg_ymin, seg_ymax = np.where(rows)[0][[0, -1]]
+                seg_xmin, seg_xmax = np.where(cols)[0][[0, -1]]
+            else:
+                # Fallback if mask is empty
+                seg_xmin = seg_ymin = seg_xmax = seg_ymax = 0
             
             # Use calculated bounding box from mask for segmented objects
             xmin = seg_xmin
@@ -726,7 +725,8 @@ class MainWindow(QMainWindow):
             # Add polygon for each contour (usually one, but handle multiple)
             for contour in contours:
                 # Simplify contour if too many points (reduce to reasonable number)
-                epsilon = 0.001 * cv2.arcLength(contour, True)
+                # Use slightly higher epsilon for faster processing with minimal quality loss
+                epsilon = 0.002 * cv2.arcLength(contour, True)
                 approx = cv2.approxPolyDP(contour, epsilon, True)
                 
                 # Create polygon element
@@ -739,6 +739,10 @@ class MainWindow(QMainWindow):
                     points.append(f"{x},{y}")
                 
                 polygon_elem.text = " ".join(points)
+            
+            # Process events periodically to keep UI responsive during save
+            if QApplication.instance() is not None:
+                QApplication.instance().processEvents()
         
         # Create output directory if needed
         os.makedirs(os.path.dirname(xml_path), exist_ok=True)
@@ -759,10 +763,18 @@ class MainWindow(QMainWindow):
         # Finalize current segment
         self.finalize_segment()
         
+        # Process events to show UI updates before blocking operations
+        if QApplication.instance() is not None:
+            QApplication.instance().processEvents()
+        
         try:
             # Create output directories
             os.makedirs(OUTPUT_IMG_DIR, exist_ok=True)
             os.makedirs(OUTPUT_LABEL_DIR, exist_ok=True)
+            
+            # Process events after directory creation
+            if QApplication.instance() is not None:
+                QApplication.instance().processEvents()
             
             # Get base filename
             base_name = os.path.splitext(os.path.basename(self.current_image_path))[0]
@@ -771,12 +783,20 @@ class MainWindow(QMainWindow):
             output_img_path = os.path.join(OUTPUT_IMG_DIR, os.path.basename(self.current_image_path))
             shutil.copy2(self.current_image_path, output_img_path)
             
+            # Process events after image copy
+            if QApplication.instance() is not None:
+                QApplication.instance().processEvents()
+            
             # Get all segments
             segments = self.image_view.get_segments()
             
             # Save XML to output/labels
             output_xml_path = os.path.join(OUTPUT_LABEL_DIR, base_name + ".xml")
             self.save_voc_xml(output_xml_path, self.current_image_path, segments)
+            
+            # Process events before loading next image
+            if QApplication.instance() is not None:
+                QApplication.instance().processEvents()
             
             # Move to next image
             if self.current_image_idx < len(self.image_paths) - 1:

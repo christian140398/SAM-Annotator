@@ -5,11 +5,34 @@ Image display/view area component with SAM segmentation support
 from typing import Optional, List, Tuple
 import numpy as np
 import cv2
-from PySide6.QtWidgets import QWidget, QLabel, QHBoxLayout
-from PySide6.QtCore import Qt, Signal, QPoint, QThread, QTimer
+from PySide6.QtWidgets import QWidget, QLabel, QHBoxLayout, QVBoxLayout, QProgressBar
+from PySide6.QtCore import Qt, Signal, QPoint, QThread, QObject
 from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QWheelEvent
-from frontend.theme import CANVAS_BG, ITEM_BG, ITEM_BORDER, TEXT_COLOR, TOPBAR_TEXT_MUTED
+from frontend.theme import CANVAS_BG, ITEM_BORDER, TEXT_COLOR, ITEM_BG
 from segmentation.sam_model import SAMModel
+
+
+class SAMImageProcessor(QObject):
+    """Worker object for processing images with SAM in background thread"""
+    finished = Signal()
+    processing_complete = Signal()
+    
+    def __init__(self, sam_model: SAMModel, image: np.ndarray):
+        super().__init__()
+        self.sam_model = sam_model
+        self.image = image.copy()  # Copy to avoid issues with thread safety
+    
+    def process(self):
+        """Process the image with SAM model"""
+        try:
+            if self.sam_model:
+                self.sam_model.set_image(self.image)
+                print("SAM image processing completed")
+                self.processing_complete.emit()
+        except Exception as e:
+            print(f"Error processing SAM image: {str(e)}")
+        finally:
+            self.finished.emit()
 
 
 class ImageView(QWidget):
@@ -43,6 +66,9 @@ class ImageView(QWidget):
         
         # SAM model
         self.sam_model: Optional[SAMModel] = None
+        self.sam_thread: Optional[QThread] = None
+        self.sam_worker: Optional[SAMImageProcessor] = None
+        self.sam_ready = False  # Flag to track if SAM processing is complete
         
         # Segmentation state
         self.current_points: List[Tuple[Tuple[int, int], bool]] = []  # List of ((x, y), is_positive)
@@ -64,9 +90,13 @@ class ImageView(QWidget):
         # Create label indicator widget
         self.label_indicator = None
         
+        # Create loading indicator widget
+        self.loading_indicator = None
+        
         self.apply_styles()
         self.update_cursor()
         self.setup_label_indicator()
+        self.setup_loading_indicator()
     
     def apply_styles(self):
         """Apply styles to the widget"""
@@ -149,6 +179,75 @@ class ImageView(QWidget):
             # Don't hide, just show "No label"
             self.label_indicator.show()
     
+    def setup_loading_indicator(self):
+        """Setup the loading indicator widget that shows during SAM processing"""
+        # Create container widget for absolute positioning
+        self.loading_indicator = QWidget(self)
+        self.loading_indicator.setObjectName("LoadingIndicator")
+        
+        # Layout for the indicator
+        indicator_layout = QVBoxLayout(self.loading_indicator)
+        indicator_layout.setContentsMargins(20, 16, 20, 16)
+        indicator_layout.setSpacing(12)
+        indicator_layout.setAlignment(Qt.AlignCenter)
+        
+        # Create progress bar (indeterminate/spinning)
+        self.loading_progress = QProgressBar()
+        self.loading_progress.setRange(0, 0)  # Indeterminate mode
+        self.loading_progress.setFixedWidth(200)
+        self.loading_progress.setFixedHeight(4)
+        self.loading_progress.setTextVisible(False)
+        indicator_layout.addWidget(self.loading_progress)
+        
+        # Label text
+        self.loading_label = QLabel("Embedding image...")
+        self.loading_label.setAlignment(Qt.AlignCenter)
+        self.loading_label.setStyleSheet(f"""
+            color: {TEXT_COLOR};
+            font-size: 13px;
+            background-color: transparent;
+        """)
+        indicator_layout.addWidget(self.loading_label)
+        
+        # Style the indicator container
+        self.loading_indicator.setStyleSheet(f"""
+            QWidget#LoadingIndicator {{
+                background-color: rgba(29, 34, 42, 0.92);
+                border: 1px solid {ITEM_BORDER};
+                border-radius: 8px;
+            }}
+            QProgressBar {{
+                border: none;
+                background-color: {ITEM_BG};
+                border-radius: 2px;
+            }}
+            QProgressBar::chunk {{
+                background-color: {TEXT_COLOR};
+                border-radius: 2px;
+            }}
+        """)
+        
+        # Initially hide
+        self.loading_indicator.hide()
+    
+    def update_loading_indicator(self):
+        """Update loading indicator visibility based on SAM ready state"""
+        if self.loading_indicator is None:
+            return
+        
+        if not self.sam_ready and self.base_image is not None:
+            # Show loading indicator
+            self.loading_indicator.show()
+            # Center it in the widget
+            indicator_width = 240
+            indicator_height = 80
+            x = (self.width() - indicator_width) // 2
+            y = (self.height() - indicator_height) // 2
+            self.loading_indicator.setGeometry(x, y, indicator_width, indicator_height)
+        else:
+            # Hide loading indicator
+            self.loading_indicator.hide()
+    
     def resizeEvent(self, _event):
         """Handle resize event"""
         self.update_display()
@@ -161,6 +260,10 @@ class ImageView(QWidget):
             x = self.width() - indicator_width - margin
             y = margin
             self.label_indicator.setGeometry(x, y, indicator_width, indicator_height)
+        
+        # Update loading indicator position
+        self.update_loading_indicator()
+        
         super().resizeEvent(_event)
     
     def update_cursor(self):
@@ -225,6 +328,7 @@ class ImageView(QWidget):
         self.finalized_masks = []
         self.finalized_labels = []
         self.hovered_segment_index = None
+        self.sam_ready = False  # Reset SAM ready flag
         
         # Reset pan/zoom
         self.pan_offset_x = 0
@@ -235,20 +339,60 @@ class ImageView(QWidget):
         self.update_display()
         self.update()
         
-        # Process SAM in background (non-blocking)
-        # Use QTimer to defer SAM processing until after UI update
+        # Show loading indicator
+        self.update_loading_indicator()
+        
+        # Process SAM in background thread (non-blocking)
         if self.sam_model:
-            QTimer.singleShot(0, lambda: self._process_sam_image(img))
+            self._process_sam_image_async(img)
+        else:
+            # No SAM model, but still show as ready
+            self.sam_ready = True
+            self.update_loading_indicator()
     
-    def _process_sam_image(self, img):
-        """Process image with SAM model (called asynchronously)"""
+    def _process_sam_image_async(self, img):
+        """Process image with SAM model in background thread"""
+        # Cancel any existing processing
+        if self.sam_thread is not None:
+            try:
+                if self.sam_thread.isRunning():
+                    self.sam_thread.quit()
+                    self.sam_thread.wait(1000)  # Wait up to 1 second
+            except RuntimeError:
+                # Thread already deleted, ignore
+                pass
+        
+        # Create new thread and worker
+        self.sam_thread = QThread()
+        self.sam_worker = SAMImageProcessor(self.sam_model, img)
+        self.sam_worker.moveToThread(self.sam_thread)
+        
+        # Connect signals
+        self.sam_thread.started.connect(self.sam_worker.process)
+        self.sam_worker.processing_complete.connect(self._on_sam_ready)
+        self.sam_worker.finished.connect(self.sam_thread.quit)
+        self.sam_worker.finished.connect(self.sam_worker.deleteLater)
+        self.sam_thread.finished.connect(self._cleanup_thread)
+        
+        # Start processing in background
+        self.sam_thread.start()
+    
+    def _on_sam_ready(self):
+        """Called when SAM processing is complete"""
+        self.sam_ready = True
+        print("SAM is ready for segmentation")
+        # Hide loading indicator
+        self.update_loading_indicator()
+    
+    def _cleanup_thread(self):
+        """Clean up thread resources"""
         try:
-            if self.sam_model:
-                # This is the expensive operation - now runs after UI updates
-                self.sam_model.set_image(img)
-                print("SAM image processing completed")
-        except Exception as e:
-            print(f"Error processing SAM image: {str(e)}")
+            if self.sam_thread is not None:
+                self.sam_thread.deleteLater()
+                self.sam_thread = None
+        except RuntimeError:
+            # Thread already deleted, ignore
+            pass
     
     def set_current_label(self, label_id: Optional[str]):
         """Set the current label for new segments"""
@@ -317,6 +461,11 @@ class ImageView(QWidget):
             self.current_mask = None
             return
         
+        # Check if SAM is ready (image processing complete)
+        if not self.sam_ready:
+            print("SAM is not ready yet, please wait...")
+            return
+        
         # Separate positive and negative points
         positive_points = [(x, y) for (x, y), is_pos in self.current_points if is_pos]
         negative_points = [(x, y) for (x, y), is_pos in self.current_points if not is_pos]
@@ -333,8 +482,25 @@ class ImageView(QWidget):
         labels = [1] * len(positive_points) + [0] * len(negative_points)
         
         # Predict mask
-        mask = self.sam_model.predict_mask(all_points, labels, self.bounding_box)
-        self.current_mask = mask
+        try:
+            mask = self.sam_model.predict_mask(all_points, labels, self.bounding_box)
+            # Validate mask dimensions match current image
+            if mask is not None and self.base_image is not None:
+                img_h, img_w = self.base_image.shape[:2]
+                mask_h, mask_w = mask.shape[:2]
+                if mask_h != img_h or mask_w != img_w:
+                    print(f"Warning: Mask dimensions ({mask_h}, {mask_w}) don't match image ({img_h}, {img_w}), skipping")
+                    self.current_mask = None
+                    return
+            self.current_mask = mask
+        except RuntimeError as e:
+            if "image must be set" in str(e):
+                print("SAM image not set yet, please wait...")
+                self.sam_ready = False
+            else:
+                raise
+            self.current_mask = None
+            return
         
         # Emit signal
         self.mask_updated.emit(mask)
@@ -355,6 +521,14 @@ class ImageView(QWidget):
         
         if self.current_label_id is None:
             return False
+        
+        # Validate mask dimensions match current image before finalizing
+        if self.base_image is not None:
+            img_h, img_w = self.base_image.shape[:2]
+            mask_h, mask_w = self.current_mask.shape[:2]
+            if mask_h != img_h or mask_w != img_w:
+                print(f"Warning: Cannot finalize mask with dimensions ({mask_h}, {mask_w}) != image ({img_h}, {img_w})")
+                return False
         
         # Add to finalized masks
         self.finalized_masks.append(self.current_mask.copy())
@@ -415,6 +589,14 @@ class ImageView(QWidget):
         
         # Draw finalized masks
         for idx, (mask, label_id) in enumerate(zip(self.finalized_masks, self.finalized_labels)):
+            # Validate mask dimensions match current image
+            if mask is not None and self.base_image is not None:
+                img_h, img_w = self.base_image.shape[:2]
+                mask_h, mask_w = mask.shape[:2]
+                if mask_h != img_h or mask_w != img_w:
+                    print(f"Warning: Skipping mask {idx} with dimensions ({mask_h}, {mask_w}) != image ({img_h}, {img_w})")
+                    continue
+            
             color = self.label_colors.get(label_id, (255, 0, 0))
             
             # Highlight hovered segment with brighter color and border
@@ -545,8 +727,16 @@ class ImageView(QWidget):
         
         # Draw current mask being built
         if self.current_mask is not None:
-            color = self.label_colors.get(self.current_label_id, (255, 0, 0))
-            overlay[self.current_mask] = (0.5 * overlay[self.current_mask] + 0.5 * np.array(color, dtype=np.uint8)).astype(np.uint8)
+            # Validate mask dimensions match current image
+            if self.base_image is not None:
+                img_h, img_w = self.base_image.shape[:2]
+                mask_h, mask_w = self.current_mask.shape[:2]
+                if mask_h == img_h and mask_w == img_w:
+                    color = self.label_colors.get(self.current_label_id, (255, 0, 0))
+                    overlay[self.current_mask] = (0.5 * overlay[self.current_mask] + 0.5 * np.array(color, dtype=np.uint8)).astype(np.uint8)
+                else:
+                    # Clear invalid mask
+                    self.current_mask = None
         
         # Draw points
         for (x, y), is_positive in self.current_points:
@@ -654,6 +844,9 @@ class ImageView(QWidget):
             x = self.width() - indicator_width - margin
             y = margin
             self.label_indicator.setGeometry(x, y, indicator_width, indicator_height)
+        
+        # Update loading indicator position
+        self.update_loading_indicator()
     
     def showEvent(self, event):
         """Handle show event to position label indicator"""
@@ -666,6 +859,9 @@ class ImageView(QWidget):
             x = self.width() - indicator_width - margin
             y = margin
             self.label_indicator.setGeometry(x, y, indicator_width, indicator_height)
+        
+        # Update loading indicator
+        self.update_loading_indicator()
     
     def mousePressEvent(self, event):
         """Handle mouse press events"""
@@ -836,3 +1032,13 @@ class ImageView(QWidget):
         self.current_mask = None
         self.update_display()
         self.update()
+    
+    def __del__(self):
+        """Cleanup thread when widget is destroyed"""
+        try:
+            if self.sam_thread is not None and self.sam_thread.isRunning():
+                self.sam_thread.quit()
+                self.sam_thread.wait(1000)  # Wait up to 1 second
+        except RuntimeError:
+            # Thread already deleted, ignore
+            pass
