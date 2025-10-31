@@ -131,22 +131,20 @@ class KeybindsBar(QWidget):
         self.adjust_height()
     
     def update_labels_display(self):
-        """Update the labels display with numbers"""
+        """Update the labels display with numbers (keybinds)"""
         # Clear existing label items
         while self.labels_layout.count():
             item = self.labels_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
         
-        # Add labels with their numbers (only first 4 for shortcuts 1-4)
-        for i, label in enumerate(self.labels[:4]):
-            label_item = QLabel(f"{i + 1}: {label.get('name', '')}")
-            label_item.setStyleSheet(f"""
-                color: {TOPBAR_TEXT_MUTED};
-                font-size: 11px;
-                background-color: transparent;
-            """)
-            self.labels_layout.addWidget(label_item)
+        # Add labels with their keybind numbers (all labels)
+        for i, label in enumerate(self.labels):
+            keybind_key = str(i + 1)
+            label_name = label.get('name', '')
+            # Create a KeybindItem to match the style of other keybinds
+            item = KeybindItem(keybind_key, label_name)
+            self.labels_layout.addWidget(item)
         
         self.labels_layout.addStretch()
         self.adjust_height()

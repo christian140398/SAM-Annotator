@@ -7,6 +7,9 @@ input/**
 # Output folder contents
 output/**
 
+# Label file
+label.txt
+
 # Python
 __pycache__/
 *.py[cod]
