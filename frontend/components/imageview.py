@@ -79,13 +79,23 @@ class ImageView(QWidget):
         self.bounding_box: Optional[Tuple[int, int, int, int]] = None  # (xmin, ymin, xmax, ymax)
         self.hovered_segment_index: Optional[int] = None  # Index of hovered segment
         
+        # Undo history for current segment (stores mask snapshots)
+        self.mask_history: List[np.ndarray] = []  # History of mask states for undo
+        self.points_history: List[List[Tuple[Tuple[int, int], bool]]] = []  # History of points for undo
+        
         # Label color palette (label_id -> BGR color tuple)
         self.label_colors: dict = {}
         # Label info (label_id -> dict with 'name', 'color')
         self.label_info: dict = {}
         
         # Tool state
-        self.active_tool = "segment"  # "segment" or "pan"
+        self.active_tool = "segment"  # "segment", "brush", or "pan"
+        
+        # Brush state
+        self.is_brushing = False
+        self.brush_mode = "draw"  # "draw" or "erase"
+        self.brush_size = 10  # Brush radius in pixels (image coordinates)
+        self.last_brush_pos: Optional[Tuple[int, int]] = None  # Last brush position in image coordinates
         
         # Create label indicator widget
         self.label_indicator = None
@@ -268,11 +278,15 @@ class ImageView(QWidget):
     
     def update_cursor(self):
         """Update cursor based on active tool and SAM ready state"""
-        # If SAM is not ready, show "not allowed" cursor for segmentation
-        if not self.sam_ready and self.active_tool == "segment":
+        # If SAM is not ready, show "not allowed" cursor for segmentation and brush
+        if not self.sam_ready and (self.active_tool == "segment" or self.active_tool == "brush"):
             self.setCursor(Qt.ForbiddenCursor)
         elif self.active_tool == "pan":
             self.setCursor(Qt.OpenHandCursor)
+        elif self.active_tool == "brush":
+            # For brush tool, we'll use a circle cursor when drawing/erasing
+            # For now use crosshair cursor (could be customized later)
+            self.setCursor(Qt.CrossCursor)
         else:
             self.setCursor(Qt.CrossCursor)
     
@@ -332,6 +346,8 @@ class ImageView(QWidget):
         self.finalized_labels = []
         self.hovered_segment_index = None
         self.sam_ready = False  # Reset SAM ready flag
+        self.mask_history = []  # Clear undo history
+        self.points_history = []  # Clear points history
         
         # Reset pan/zoom
         self.pan_offset_x = 0
@@ -440,6 +456,122 @@ class ImageView(QWidget):
         
         return img_x, img_y
     
+    def _initialize_mask_for_brush(self):
+        """Initialize an empty mask for brush drawing if one doesn't exist"""
+        if self.base_image is None or self.current_label_id is None:
+            return
+        
+        # Create an empty mask matching image dimensions
+        h, w = self.base_image.shape[:2]
+        self.current_mask = np.zeros((h, w), dtype=bool)
+    
+    def _save_mask_to_history(self):
+        """Save current mask state and points to history for undo"""
+        if self.current_mask is not None:
+            self.mask_history.append(self.current_mask.copy())
+            # Also save points state
+            self.points_history.append(self.current_points.copy())
+            # Limit history size to prevent memory issues (keep last 50 states)
+            if len(self.mask_history) > 50:
+                self.mask_history.pop(0)
+                self.points_history.pop(0)
+    
+    def _apply_brush_stroke(self, img_coords: Tuple[int, int], mode: str):
+        """
+        Apply brush stroke at a single point
+        
+        Args:
+            img_coords: (x, y) in image coordinates
+            mode: "draw" or "erase"
+        """
+        if self.current_mask is None or self.base_image is None:
+            return
+        
+        # History is saved in mousePressEvent before starting brush stroke
+        # so we don't save it here to avoid duplicate saves
+        
+        img_x, img_y = img_coords
+        h, w = self.base_image.shape[:2]
+        
+        # Clamp coordinates to image bounds
+        img_x = max(0, min(w - 1, img_x))
+        img_y = max(0, min(h - 1, img_y))
+        
+        # Calculate brush size in image coordinates (adjusted for current zoom)
+        # Brush size should appear consistent regardless of zoom level
+        brush_radius = max(1, int(self.brush_size / self.display_scale)) if self.display_scale > 0 else self.brush_size
+        
+        # Create a temporary mask for the brush stroke
+        temp_mask = np.zeros((h, w), dtype=np.uint8)
+        cv2.circle(temp_mask, (img_x, img_y), brush_radius, 255, -1)
+        temp_mask = temp_mask.astype(bool)
+        
+        # Apply to current mask
+        if mode == "draw":
+            self.current_mask = self.current_mask | temp_mask
+        elif mode == "erase":
+            self.current_mask = self.current_mask & ~temp_mask
+        
+        # Clip to bounding box if present
+        if self.bounding_box is not None:
+            from segmentation.sam_utils import apply_clip_to_box
+            self.current_mask = apply_clip_to_box(self.current_mask, self.bounding_box, h, w)
+        
+        # Update display
+        self.update_display()
+        self.update()
+    
+    def _apply_brush_line(self, start_coords: Tuple[int, int], end_coords: Tuple[int, int], mode: str):
+        """
+        Apply brush stroke along a line between two points
+        
+        Args:
+            start_coords: (x, y) start position in image coordinates
+            end_coords: (x, y) end position in image coordinates
+            mode: "draw" or "erase"
+        """
+        if self.current_mask is None or self.base_image is None:
+            return
+        
+        # Note: History is saved in _apply_brush_stroke on first stroke, so we don't save again here
+        
+        start_x, start_y = start_coords
+        end_x, end_y = end_coords
+        h, w = self.base_image.shape[:2]
+        
+        # Clamp coordinates to image bounds
+        start_x = max(0, min(w - 1, start_x))
+        start_y = max(0, min(h - 1, start_y))
+        end_x = max(0, min(w - 1, end_x))
+        end_y = max(0, min(h - 1, end_y))
+        
+        # Calculate brush size in image coordinates
+        brush_radius = max(1, int(self.brush_size / self.display_scale)) if self.display_scale > 0 else self.brush_size
+        
+        # Create a temporary mask for the brush line
+        temp_mask = np.zeros((h, w), dtype=np.uint8)
+        thickness = brush_radius * 2 if brush_radius > 1 else -1  # -1 means filled circle
+        cv2.line(temp_mask, (start_x, start_y), (end_x, end_y), 255, thickness)
+        # Also draw circles at start and end for smoother strokes
+        cv2.circle(temp_mask, (start_x, start_y), brush_radius, 255, -1)
+        cv2.circle(temp_mask, (end_x, end_y), brush_radius, 255, -1)
+        temp_mask = temp_mask.astype(bool)
+        
+        # Apply to current mask
+        if mode == "draw":
+            self.current_mask = self.current_mask | temp_mask
+        elif mode == "erase":
+            self.current_mask = self.current_mask & ~temp_mask
+        
+        # Clip to bounding box if present
+        if self.bounding_box is not None:
+            from segmentation.sam_utils import apply_clip_to_box
+            self.current_mask = apply_clip_to_box(self.current_mask, self.bounding_box, h, w)
+        
+        # Update display
+        self.update_display()
+        self.update()
+    
     def add_point(self, widget_x: int, widget_y: int, is_positive: bool):
         """
         Add a point for segmentation
@@ -456,6 +588,9 @@ class ImageView(QWidget):
         img_coords = self.widget_to_image_coords(widget_x, widget_y)
         if img_coords is None:
             return
+        
+        # Save current mask state to history before adding point
+        self._save_mask_to_history()
         
         img_x, img_y = img_coords
         
@@ -527,10 +662,27 @@ class ImageView(QWidget):
         Returns:
             True if a segment was finalized, False otherwise
         """
-        if self.current_mask is None or len(self.current_points) == 0:
+        # Need either a mask or points to finalize
+        # Brush tool creates masks directly without points
+        # Segment tool creates masks from points
+        if self.current_mask is None and len(self.current_points) == 0:
             return False
         
         if self.current_label_id is None:
+            return False
+        
+        # If we have points but no mask yet, try to generate mask from points
+        if self.current_mask is None and len(self.current_points) > 0:
+            self.update_mask_from_points()
+            if self.current_mask is None:
+                return False
+        
+        # Need a valid mask to finalize
+        if self.current_mask is None:
+            return False
+        
+        # Validate mask has some content (not empty)
+        if self.current_mask.sum() == 0:
             return False
         
         # Validate mask dimensions match current image before finalizing
@@ -548,6 +700,8 @@ class ImageView(QWidget):
         # Clear current state
         self.current_points = []
         self.current_mask = None
+        self.mask_history = []  # Clear undo history when finalizing
+        self.points_history = []  # Clear points history when finalizing
         
         # Emit signal
         self.segment_finalized.emit(self.finalized_masks[-1], self.current_label_id)
@@ -560,15 +714,33 @@ class ImageView(QWidget):
     
     def undo_last_point(self) -> bool:
         """
-        Undo last point
+        Undo last action (point, brush stroke, or erase)
         
         Returns:
-            True if point was removed, False otherwise
+            True if an action was undone, False otherwise
         """
+        # First, try to restore from mask history (for brush strokes and point additions)
+        if self.mask_history and self.points_history:
+            # Restore previous mask state
+            self.current_mask = self.mask_history.pop()
+            # Restore previous points state
+            self.current_points = self.points_history.pop()
+            
+            # Update display
+            self.update_display()
+            self.update()
+            # Emit signal
+            if self.current_mask is not None:
+                self.mask_updated.emit(self.current_mask)
+            return True
+        
+        # If no mask history, try undoing last point
         if self.current_points:
+            # Remove last point and regenerate mask
             self.current_points.pop()
             self.update_mask_from_points()
             return True
+        
         return False
     
     def undo_last_segment(self) -> bool:
@@ -802,6 +974,36 @@ class ImageView(QWidget):
             self.is_panning = True
             self.last_pan_pos = event.pos()
             self.setCursor(Qt.ClosedHandCursor)
+        elif self.active_tool == "brush" and event.button() == Qt.LeftButton:
+            # Left click: start drawing with brush (only if SAM is ready)
+            if self.sam_ready:
+                if self.current_mask is not None or self.current_label_id is not None:
+                    # Ensure we have a mask to draw on
+                    if self.current_mask is None:
+                        self._initialize_mask_for_brush()
+                    if self.current_mask is not None:
+                        # Save history BEFORE starting brush stroke
+                        if not self.is_brushing:
+                            self._save_mask_to_history()
+                        self.is_brushing = True
+                        self.brush_mode = "draw"
+                        img_coords = self.widget_to_image_coords(event.x(), event.y())
+                        if img_coords:
+                            self.last_brush_pos = img_coords
+                            self._apply_brush_stroke(img_coords, "draw")
+        elif self.active_tool == "brush" and event.button() == Qt.RightButton:
+            # Right click: start erasing with brush (only if SAM is ready)
+            if self.sam_ready:
+                if self.current_mask is not None:
+                    # Save history BEFORE starting brush stroke
+                    if not self.is_brushing:
+                        self._save_mask_to_history()
+                    self.is_brushing = True
+                    self.brush_mode = "erase"
+                    img_coords = self.widget_to_image_coords(event.x(), event.y())
+                    if img_coords:
+                        self.last_brush_pos = img_coords
+                        self._apply_brush_stroke(img_coords, "erase")
         elif event.button() == Qt.LeftButton and self.active_tool == "segment":
             # Left click: positive point (only if SAM is ready)
             if self.sam_ready:
@@ -828,6 +1030,16 @@ class ImageView(QWidget):
             
             # Redraw
             self.update()
+        elif self.is_brushing and self.active_tool == "brush":
+            # Continue brush stroke while moving
+            img_coords = self.widget_to_image_coords(event.x(), event.y())
+            if img_coords:
+                # Draw line from last position to current position for smooth strokes
+                if self.last_brush_pos:
+                    self._apply_brush_line(self.last_brush_pos, img_coords, self.brush_mode)
+                else:
+                    self._apply_brush_stroke(img_coords, self.brush_mode)
+                self.last_brush_pos = img_coords
         super().mouseMoveEvent(event)
     
     def mouseReleaseEvent(self, event):
@@ -837,6 +1049,13 @@ class ImageView(QWidget):
             self.is_panning = False
             self.last_pan_pos = None
             self.update_cursor()
+        elif self.is_brushing and (event.button() == Qt.LeftButton or event.button() == Qt.RightButton):
+            # Stop brushing
+            self.is_brushing = False
+            self.last_brush_pos = None
+            # Emit mask updated signal
+            if self.current_mask is not None:
+                self.mask_updated.emit(self.current_mask)
         super().mouseReleaseEvent(event)
     
     def wheelEvent(self, event: QWheelEvent):

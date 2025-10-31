@@ -77,10 +77,11 @@ class KeybindsBar(QWidget):
     DEFAULT_KEYBINDS = [
         {"key": "H", "label": "Pan tool"},
         {"key": "S", "label": "Segment tool"},
+        {"key": "B", "label": "Brush tool"},
         {"key": "Ctrl+S", "label": "Save & next image"},
         {"key": "Scroll", "label": "Zoom"},
         {"key": "N", "label": "Finalize segment"},
-        {"key": "U", "label": "Undo last point"},
+        {"key": "U", "label": "Undo"},
         {"key": "Q", "label": "Quit"},
     ]
     

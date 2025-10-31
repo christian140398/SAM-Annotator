@@ -1,12 +1,14 @@
 # SAM Annotator
 
-A graphical annotation tool for image segmentation using Meta's Segment Anything Model (SAM). Built with PySide6, this tool provides an interactive interface for creating high-quality segmentation masks with point-based prompts.
+A graphical annotation tool for image segmentation using Meta's Segment Anything Model (SAM). Built with PySide6, this tool provides an interactive interface for creating high-quality segmentation masks with point-based prompts and brush-based editing.
 
 ## Features
 
 - **Interactive Segmentation**: Use SAM's powerful model to generate segmentation masks with simple point clicks
+- **Brush Tool**: Draw and erase segments directly on the image for precise mask editing
 - **Multi-category Support**: Organize segments by customizable labels loaded from a configuration file
 - **Dynamic Label System**: Labels are loaded from `label.txt` with automatically generated colors
+- **Enhanced Undo System**: Undo brush strokes, point additions, and segment deletions with confirmation dialogs
 - **COCO Export**: Export annotations in COCO format for machine learning pipelines
 
 ## Installation
@@ -52,8 +54,8 @@ python main.py
 
 4. Use the interface to:
    - Navigate through images
-   - Click to add positive (include) points (green)
-   - Right-click to add negative (exclude) points (red)
+   - **Segment Tool (S)**: Click to add positive (include) points (green), right-click to add negative (exclude) points (red)
+   - **Brush Tool (B)**: Left-click and drag to draw/add to segment, right-click and drag to erase/remove from segment
    - Assign categories to segments
    - Save annotations
 
@@ -97,11 +99,32 @@ python test/segmentation_test.py 00004
 
 ## Keyboard Shortcuts
 
-- **S**: Save & next image
-- **Scroll**: Zoom in/out
+### Tools
+- **H**: Pan tool (drag to move image)
+- **S**: Segment tool (click to add points for segmentation)
+- **B**: Brush tool (draw and erase segments directly)
+- **F**: Fit to bounding box (zoom and center view on bounding box)
+
+### Segmentation
+#### Segment Tool (S)
+- **Left Click**: Add positive point (include area) - green marker
+- **Right Click**: Add negative point (exclude area) - red marker
+
+#### Brush Tool (B)
+- **Left Click + Drag**: Draw/add to segment
+- **Right Click + Drag**: Erase/remove from segment
+
+#### General
 - **N**: Finalize current segment
-- **U**: Undo last point
+- **U**: Undo last action (brush stroke, point addition, or segment deletion)
+  - When undoing a finalized segment, a confirmation dialog will appear
+
+### Navigation & Actions
+- **Scroll**: Zoom in/out (scroll wheel)
+- **Ctrl+S**: Save & next image
 - **Q**: Quit application
+
+### Label Selection
 - **1-N**: Select label category (where N is the number of labels in `label.txt`)
   - Key `1` selects the first label, `2` selects the second label, etc.
   - The keybind bar at the bottom displays all available labels with their corresponding numbers

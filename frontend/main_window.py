@@ -387,6 +387,10 @@ class MainWindow(QMainWindow):
         shortcut_s_tool = QShortcut(QKeySequence("S"), self)
         shortcut_s_tool.activated.connect(lambda: self.select_tool("segment"))
         
+        # B - Brush tool
+        shortcut_b_tool = QShortcut(QKeySequence("B"), self)
+        shortcut_b_tool.activated.connect(lambda: self.select_tool("brush"))
+        
         # Ctrl+S - Save and next image (changed from S to avoid conflict)
         shortcut_save = QShortcut(QKeySequence("Ctrl+S"), self)
         shortcut_save.activated.connect(self.save_and_next_image)
@@ -446,8 +450,26 @@ class MainWindow(QMainWindow):
     def undo_action(self):
         """Undo last action (point or segment)"""
         if not self.image_view.undo_last_point():
-            self.image_view.undo_last_segment()
-        self.update_segments_panel()
+            # Check if there are finalized segments to delete
+            if len(self.image_view.finalized_masks) > 0:
+                # Show confirmation dialog
+                reply = QMessageBox.question(
+                    self,
+                    "Delete Segment",
+                    "You are about to delete last finished segment, will you proceed?",
+                    QMessageBox.Yes | QMessageBox.Cancel,
+                    QMessageBox.Cancel
+                )
+                
+                if reply == QMessageBox.Yes:
+                    self.image_view.undo_last_segment()
+                    self.update_segments_panel()
+            else:
+                # No segments to delete, just update panel
+                self.update_segments_panel()
+        else:
+            # Successfully undid a point/brush stroke, update panel
+            self.update_segments_panel()
     
     def on_segment_finalized(self, _mask, _label_id: str):
         """Handle segment finalized signal"""
@@ -741,26 +763,34 @@ class MainWindow(QMainWindow):
             mask_uint8 = (mask * 255).astype(np.uint8)
             contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
-            # Create segmentation element (VOC format can include polygon segmentation)
-            segmentation_elem = ET.SubElement(obj_elem, "segmentation")
-            
-            # Add polygon for each contour (usually one, but handle multiple)
-            for contour in contours:
-                # Simplify contour if too many points (reduce to reasonable number)
-                # Use slightly higher epsilon for faster processing with minimal quality loss
-                epsilon = 0.002 * cv2.arcLength(contour, True)
-                approx = cv2.approxPolyDP(contour, epsilon, True)
+            if len(contours) > 0:
+                # Create segmentation element (VOC format can include polygon segmentation)
+                segmentation_elem = ET.SubElement(obj_elem, "segmentation")
                 
-                # Create polygon element
-                polygon_elem = ET.SubElement(segmentation_elem, "polygon")
+                # Sort contours by area (largest first) and use only the largest one
+                # This ensures we only save one polygon per segment, avoiding small artifacts
+                contours_sorted = sorted(contours, key=cv2.contourArea, reverse=True)
+                main_contour = contours_sorted[0]
                 
-                # Add points as x1,y1 x2,y2 ... format
-                points = []
-                for point in approx:
-                    x, y = point[0]
-                    points.append(f"{x},{y}")
-                
-                polygon_elem.text = " ".join(points)
+                # Only create polygon if contour has at least 3 points (minimum for a polygon)
+                if len(main_contour) >= 3:
+                    # Simplify contour if too many points (reduce to reasonable number)
+                    # Use slightly higher epsilon for faster processing with minimal quality loss
+                    epsilon = 0.002 * cv2.arcLength(main_contour, True)
+                    approx = cv2.approxPolyDP(main_contour, epsilon, True)
+                    
+                    # Only save if simplified polygon has at least 3 points
+                    if len(approx) >= 3:
+                        # Create polygon element
+                        polygon_elem = ET.SubElement(segmentation_elem, "polygon")
+                        
+                        # Add points as x1,y1 x2,y2 ... format
+                        points = []
+                        for point in approx:
+                            x, y = point[0]
+                            points.append(f"{x},{y}")
+                        
+                        polygon_elem.text = " ".join(points)
             
             # Process events periodically to keep UI responsive during save
             if QApplication.instance() is not None:
