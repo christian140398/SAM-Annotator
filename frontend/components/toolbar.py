@@ -17,6 +17,7 @@ Tool = Literal["select", "point", "box", "brush", "erase", "pan", "segment"]
 # Tool definitions with icons (using Unicode/emoji symbols)
 TOOLS = [
     {"id": "segment", "icon": "✂", "label": "Segment", "shortcut": "S"},
+    {"id": "brush", "icon": "🖌", "label": "Brush", "shortcut": "B"},
     {"id": "pan", "icon": "✋", "label": "Pan", "shortcut": "H"},
     {"id": "fit_bbox", "icon": "⬜", "label": "Fit to Bounding Box", "shortcut": "F"},
 ]
