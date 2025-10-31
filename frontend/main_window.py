@@ -6,7 +6,8 @@ import glob
 import uuid
 import shutil
 import xml.etree.ElementTree as ET
-from typing import Optional, List, Dict
+import hashlib
+from typing import Optional, List, Dict, Tuple
 from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFrame, QMessageBox
 from PySide6.QtGui import QKeySequence, QShortcut
 import cv2
@@ -29,15 +30,81 @@ LABEL_DIR = r"input\labels"  # Labels (XML files) from input/labels folder
 OUTPUT_IMG_DIR = r"output\images"  # Output images folder
 OUTPUT_LABEL_DIR = r"output\labels"  # Output labels folder
 CLIP_TO_XML_BOX = True
+# Label file path (relative to project root)
+LABEL_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "label.txt")
 
-# Default categories/labels
-DEFAULT_CATEGORIES = ["body", "rotor", "camera", "other"]
-DEFAULT_COLORS = {
-    "body": "#00FF00",
-    "rotor": "#FFC800",
-    "camera": "#00C8FF",
-    "other": "#C800FF"
-}
+
+def load_labels_from_file(label_file: str) -> List[str]:
+    """
+    Load labels from a text file, one label per line.
+    
+    Args:
+        label_file: Path to the label file
+        
+    Returns:
+        List of label names (stripped of whitespace)
+    """
+    labels = []
+    if os.path.isfile(label_file):
+        try:
+            with open(label_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    label = line.strip()
+                    if label:  # Skip empty lines
+                        labels.append(label)
+        except Exception as e:
+            print(f"Warning: Could not load labels from {label_file}: {e}")
+    else:
+        print(f"Warning: Label file not found: {label_file}")
+    
+    return labels
+
+
+def generate_random_color_hex(seed: Optional[str] = None) -> str:
+    """
+    Generate a deterministic color in hex format (#RRGGBB) based on seed.
+    Colors are consistent across different images and sessions.
+    
+    Args:
+        seed: Seed string for reproducible colors (e.g., label name)
+        
+    Returns:
+        Hex color string (e.g., "#FF00AB")
+    """
+    if seed is None:
+        seed = "default"
+    
+    # Use deterministic hash (MD5) to generate consistent colors
+    hash_obj = hashlib.md5(seed.encode('utf-8'))
+    hash_bytes = hash_obj.digest()
+    
+    # Generate bright, visible colors (avoid too dark colors)
+    # Map hash bytes to color range 50-255
+    r = 50 + (hash_bytes[0] % 206)  # 206 = 255 - 50 + 1
+    g = 50 + (hash_bytes[1] % 206)
+    b = 50 + (hash_bytes[2] % 206)
+    
+    return f"#{r:02X}{g:02X}{b:02X}"
+
+
+def load_labels_with_colors(label_file: str) -> Tuple[List[str], Dict[str, str]]:
+    """
+    Load labels from file and generate random colors for each.
+    
+    Args:
+        label_file: Path to the label file
+        
+    Returns:
+        Tuple of (list of label names, dict mapping label name to hex color)
+    """
+    labels = load_labels_from_file(label_file)
+    colors = {}
+    
+    for label in labels:
+        # Use label name as seed for consistent color generation
+        colors[label] = generate_random_color_hex(label)
+    
+    return labels, colors
 
 
 class MainWindow(QMainWindow):
@@ -59,6 +126,7 @@ class MainWindow(QMainWindow):
         self.current_image_idx = 0
         self.current_image_path: Optional[str] = None
         self.current_xml_path: Optional[str] = None
+        self.label_shortcuts: List[QShortcut] = []  # Store label shortcuts
         
         # Initialize SAM model
         self.init_sam_model()
@@ -173,10 +241,19 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error", f"Failed to load SAM model: {str(e)}")
     
     def init_labels(self):
-        """Initialize default labels"""
-        for i, name in enumerate(DEFAULT_CATEGORIES):
+        """Initialize labels from label.txt file"""
+        label_names, label_colors = load_labels_with_colors(LABEL_FILE)
+        
+        # If no labels found in file, use defaults
+        if not label_names:
+            print("No labels found in label.txt, using defaults")
+            label_names = ["body", "rotor", "camera", "other"]
+            for name in label_names:
+                label_colors[name] = generate_random_color_hex(name)
+        
+        for i, name in enumerate(label_names):
             label_id = str(i + 1)
-            color = DEFAULT_COLORS.get(name, "#FFFFFF")
+            color = label_colors.get(name, generate_random_color_hex(name))
             self.labels.append({
                 "id": label_id,
                 "name": name,
@@ -280,10 +357,17 @@ class MainWindow(QMainWindow):
     
     def setup_shortcuts(self):
         """Setup keyboard shortcuts"""
-        # Label selection (1-4)
-        for i, label in enumerate(self.labels[:4]):
+        # Clear existing label shortcuts
+        for shortcut in self.label_shortcuts:
+            shortcut.setParent(None)
+            shortcut.deleteLater()
+        self.label_shortcuts.clear()
+        
+        # Label selection (1-N for all labels)
+        for i, label in enumerate(self.labels):
             shortcut = QShortcut(QKeySequence(str(i + 1)), self)
             shortcut.activated.connect(lambda lid=label["id"]: self.select_label(lid))
+            self.label_shortcuts.append(shortcut)
         
         # N - Next segment (finalize current)
         shortcut_n = QShortcut(QKeySequence("N"), self)
@@ -323,6 +407,9 @@ class MainWindow(QMainWindow):
         label_colors = {label["id"]: label["color"] for label in self.labels}
         self.image_view.set_label_colors(label_colors)
         self.image_view.set_labels(self.labels)
+        
+        # Recreate shortcuts to include new label
+        self.setup_shortcuts()
     
     def select_label(self, label_id: str):
         """Select a label by ID"""

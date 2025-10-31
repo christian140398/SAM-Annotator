@@ -5,7 +5,8 @@ A graphical annotation tool for image segmentation using Meta's Segment Anything
 ## Features
 
 - **Interactive Segmentation**: Use SAM's powerful model to generate segmentation masks with simple point clicks
-- **Multi-category Support**: Organize segments by labels
+- **Multi-category Support**: Organize segments by customizable labels loaded from a configuration file
+- **Dynamic Label System**: Labels are loaded from `label.txt` with automatically generated colors
 - **COCO Export**: Export annotations in COCO format for machine learning pipelines
 
 ## Installation
@@ -24,6 +25,18 @@ pip install -r requirements.txt
 3. Download the SAM model checkpoint:
    - Download `sam_vit_b_01ec64.pth` from the [official SAM repository](https://github.com/facebookresearch/segment-anything#model-checkpoints)
    - Place it in the `models/` folder
+
+4. Set up your labels:
+   - Copy `label_example.txt` to `label.txt` in the project root
+   - Edit `label.txt` to add your label categories (one label per line)
+   - Example `label.txt`:
+     ```
+     rotor
+     camera
+     frame
+     other
+     ```
+   - **Note**: `label.txt` is in `.gitignore` and won't be committed to the repository. Use `label_example.txt` as a template.
 
 ## Usage
 
@@ -46,6 +59,42 @@ python main.py
 
 5. Annotated images and labels will be saved to `output/` folder
 
+## Label Configuration
+
+The application uses a simple text file (`label.txt`) to define the available label categories. Each line in the file represents one label category.
+
+- **File Location**: `label.txt` in the project root directory
+- **Format**: One label name per line (no empty lines or special characters)
+- **Color Assignment**: Colors are automatically generated deterministically based on the label name, ensuring consistency across sessions
+- **Example**: See `label_example.txt` for a sample label configuration
+
+## Visualization Tool
+
+The project includes a test script for visualizing segmentation annotations:
+
+### `test/segmentation_test.py`
+
+This script allows you to visualize polygon segmentations from XML annotation files. It's useful for:
+- Verifying annotation quality
+- Debugging annotation issues
+- Viewing segmentation overlays on images
+
+**Usage**:
+```bash
+python test/segmentation_test.py <filename>
+```
+
+**Important**: Provide only the filename without the extension. For example:
+- If your files are `00004.jpg` and `00004.xml`, use: `python test/segmentation_test.py 00004`
+- Do not include `.jpg`, `.xml`, or any other file extension
+
+**Examples**:
+```bash
+# Visualize annotations for image 00004 (files: 00004.jpg and 00004.xml)
+python test/segmentation_test.py 00004
+
+```
+
 ## Keyboard Shortcuts
 
 - **S**: Save & next image
@@ -53,7 +102,9 @@ python main.py
 - **N**: Finalize current segment
 - **U**: Undo last point
 - **Q**: Quit application
-- **1-4**: Select label category (first 4 categories)
+- **1-N**: Select label category (where N is the number of labels in `label.txt`)
+  - Key `1` selects the first label, `2` selects the second label, etc.
+  - The keybind bar at the bottom displays all available labels with their corresponding numbers
 
 ## License
 

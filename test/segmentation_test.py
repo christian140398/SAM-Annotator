@@ -7,6 +7,7 @@ import os
 import sys
 import argparse
 import xml.etree.ElementTree as ET
+import hashlib
 import cv2
 import numpy as np
 
@@ -19,15 +20,84 @@ except ImportError:
     HAS_MATPLOTLIB = False
 
 
-# Color palette for different labels (RGB format)
-# These match the colors used in the main application
-COLOR_PALETTE_RGB = {
-    "body": (0, 255, 0),      # Green
-    "rotor": (255, 200, 0),   # Orange/Yellow
-    "camera": (0, 200, 255),  # Cyan
-    "other": (200, 0, 255),   # Magenta
-    "default": (255, 0, 0)    # Red for unknown labels
-}
+# Label file path (relative to project root)
+LABEL_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "label.txt")
+
+
+def load_labels_from_file(label_file: str):
+    """
+    Load labels from a text file, one label per line.
+    
+    Args:
+        label_file: Path to the label file
+        
+    Returns:
+        List of label names (stripped of whitespace)
+    """
+    labels = []
+    if os.path.isfile(label_file):
+        try:
+            with open(label_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    label = line.strip()
+                    if label:  # Skip empty lines
+                        labels.append(label)
+        except Exception as e:
+            print(f"Warning: Could not load labels from {label_file}: {e}")
+    else:
+        print(f"Warning: Label file not found: {label_file}")
+    
+    return labels
+
+
+def generate_random_color_rgb(seed=None):
+    """
+    Generate a deterministic color as RGB tuple (0-255) based on seed.
+    Colors are consistent across different images and sessions.
+    
+    Args:
+        seed: Seed string for reproducible colors (e.g., label name)
+        
+    Returns:
+        Tuple of (R, G, B) values from 0-255
+    """
+    if seed is None:
+        seed = "default"
+    
+    # Use deterministic hash (MD5) to generate consistent colors
+    hash_obj = hashlib.md5(seed.encode('utf-8'))
+    hash_bytes = hash_obj.digest()
+    
+    # Generate bright, visible colors (avoid too dark colors)
+    # Map hash bytes to color range 50-255
+    r = 50 + (hash_bytes[0] % 206)  # 206 = 255 - 50 + 1
+    g = 50 + (hash_bytes[1] % 206)
+    b = 50 + (hash_bytes[2] % 206)
+    
+    return (r, g, b)
+
+
+def load_color_palette(label_file: str):
+    """
+    Load labels from file and generate random colors for each.
+    
+    Args:
+        label_file: Path to the label file
+        
+    Returns:
+        Dict mapping label name (lowercase) to RGB tuple
+    """
+    labels = load_labels_from_file(label_file)
+    color_palette = {}
+    
+    for label in labels:
+        # Use label name as seed for consistent color generation
+        color_palette[label.lower()] = generate_random_color_rgb(label)
+    
+    # Default color for unknown labels (red)
+    color_palette["default"] = (255, 0, 0)
+    
+    return color_palette
 
 
 def parse_polygon(polygon_str):
@@ -110,7 +180,7 @@ def load_segmentations_from_xml(xml_path):
     return segmentations
 
 
-def draw_segmentations_opencv(image, segmentations, original_bboxes=None, output_path=None):
+def draw_segmentations_opencv(image, segmentations, original_bboxes=None, output_path=None, color_palette=None):
     """
     Draw polygon segmentations and bounding boxes on image using OpenCV.
     
@@ -119,7 +189,11 @@ def draw_segmentations_opencv(image, segmentations, original_bboxes=None, output
         segmentations: List of (label_name, polygon_points, bbox) tuples
         original_bboxes: List of original bounding boxes from input XML to draw in different style
         output_path: Optional path to save the result image
+        color_palette: Dict mapping label names to RGB tuples
     """
+    if color_palette is None:
+        color_palette = load_color_palette(LABEL_FILE)
+    
     img = image.copy()
     
     # Draw original bounding boxes first (if any) in a distinctive color
@@ -153,7 +227,7 @@ def draw_segmentations_opencv(image, segmentations, original_bboxes=None, output
     
     for label_name, polygon_points, bbox in segmentations:
         # Get color for this label (RGB format)
-        color_rgb = COLOR_PALETTE_RGB.get(label_name.lower(), COLOR_PALETTE_RGB["default"])
+        color_rgb = color_palette.get(label_name.lower(), color_palette["default"])
         # Convert RGB to BGR for OpenCV
         color = (color_rgb[2], color_rgb[1], color_rgb[0])
         
@@ -200,7 +274,7 @@ def draw_segmentations_opencv(image, segmentations, original_bboxes=None, output
         print(f"Saved result to: {output_path}")
 
 
-def draw_segmentations_matplotlib(image, segmentations, original_bboxes=None, output_path=None):
+def draw_segmentations_matplotlib(image, segmentations, original_bboxes=None, output_path=None, color_palette=None):
     """
     Draw polygon segmentations and bounding boxes on image using Matplotlib.
     
@@ -209,6 +283,7 @@ def draw_segmentations_matplotlib(image, segmentations, original_bboxes=None, ou
         segmentations: List of (label_name, polygon_points, bbox) tuples
         original_bboxes: List of original bounding boxes from input XML to draw in different style
         output_path: Optional path to save the result image
+        color_palette: Dict mapping label names to RGB tuples
     """
     if not HAS_MATPLOTLIB:
         raise ImportError(
@@ -217,6 +292,9 @@ def draw_segmentations_matplotlib(image, segmentations, original_bboxes=None, ou
             "Or use --backend opencv instead."
         )
     from matplotlib.patches import Rectangle
+    
+    if color_palette is None:
+        color_palette = load_color_palette(LABEL_FILE)
     
     # Convert BGR to RGB for matplotlib
     img_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -243,7 +321,7 @@ def draw_segmentations_matplotlib(image, segmentations, original_bboxes=None, ou
     
     for label_name, polygon_points, bbox in segmentations:
         # Get color for this label (already in RGB format)
-        color_rgb_int = COLOR_PALETTE_RGB.get(label_name.lower(), COLOR_PALETTE_RGB["default"])
+        color_rgb_int = color_palette.get(label_name.lower(), color_palette["default"])
         color_rgb = (color_rgb_int[0] / 255.0, color_rgb_int[1] / 255.0, color_rgb_int[2] / 255.0)
         
         # Draw polygon if available
@@ -398,16 +476,20 @@ Examples:
         except Exception as e:
             print(f"Warning: Could not load original bounding boxes: {e}")
     
+    # Load color palette from label file
+    color_palette = load_color_palette(LABEL_FILE)
+    print(f"Loaded {len([k for k in color_palette.keys() if k != 'default'])} labels with colors")
+    
     # Draw and display
     print(f"\nDisplaying visualization using {args.backend} backend...")
     if args.backend == "opencv":
-        draw_segmentations_opencv(image, segmentations, original_bboxes if args.show_original_bbox else None, args.output)
+        draw_segmentations_opencv(image, segmentations, original_bboxes if args.show_original_bbox else None, args.output, color_palette)
     else:
         if not HAS_MATPLOTLIB:
             print("Warning: matplotlib not available, falling back to opencv backend")
-            draw_segmentations_opencv(image, segmentations, original_bboxes if args.show_original_bbox else None, args.output)
+            draw_segmentations_opencv(image, segmentations, original_bboxes if args.show_original_bbox else None, args.output, color_palette)
         else:
-            draw_segmentations_matplotlib(image, segmentations, original_bboxes if args.show_original_bbox else None, args.output)
+            draw_segmentations_matplotlib(image, segmentations, original_bboxes if args.show_original_bbox else None, args.output, color_palette)
     
     print("Done!")
 
