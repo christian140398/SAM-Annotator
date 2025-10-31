@@ -6,7 +6,7 @@ from typing import Optional, List, Tuple
 import numpy as np
 import cv2
 from PySide6.QtWidgets import QWidget, QLabel, QHBoxLayout, QVBoxLayout, QProgressBar
-from PySide6.QtCore import Qt, Signal, QPoint, QThread, QObject
+from PySide6.QtCore import Qt, Signal, QPoint, QThread, QObject, QTimer
 from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QWheelEvent
 from frontend.theme import CANVAS_BG, ITEM_BORDER, TEXT_COLOR, ITEM_BG
 from segmentation.sam_model import SAMModel
@@ -267,8 +267,11 @@ class ImageView(QWidget):
         super().resizeEvent(_event)
     
     def update_cursor(self):
-        """Update cursor based on active tool"""
-        if self.active_tool == "pan":
+        """Update cursor based on active tool and SAM ready state"""
+        # If SAM is not ready, show "not allowed" cursor for segmentation
+        if not self.sam_ready and self.active_tool == "segment":
+            self.setCursor(Qt.ForbiddenCursor)
+        elif self.active_tool == "pan":
             self.setCursor(Qt.OpenHandCursor)
         else:
             self.setCursor(Qt.CrossCursor)
@@ -339,6 +342,11 @@ class ImageView(QWidget):
         self.update_display()
         self.update()
         
+        # Fit to bounding box if it exists (do this after update_display so widget size is known)
+        if self.bounding_box is not None:
+            # Use QTimer.singleShot to ensure widget is sized properly before fitting
+            QTimer.singleShot(100, self.fit_to_bounding_box)
+        
         # Show loading indicator
         self.update_loading_indicator()
         
@@ -349,6 +357,7 @@ class ImageView(QWidget):
             # No SAM model, but still show as ready
             self.sam_ready = True
             self.update_loading_indicator()
+            self.update_cursor()
     
     def _process_sam_image_async(self, img):
         """Process image with SAM model in background thread"""
@@ -383,6 +392,8 @@ class ImageView(QWidget):
         print("SAM is ready for segmentation")
         # Hide loading indicator
         self.update_loading_indicator()
+        # Update cursor now that SAM is ready
+        self.update_cursor()
     
     def _cleanup_thread(self):
         """Clean up thread resources"""
@@ -438,7 +449,7 @@ class ImageView(QWidget):
             widget_y: Y coordinate in widget space
             is_positive: True for positive point (include), False for negative (exclude)
         """
-        if self.base_image is None or self.sam_model is None:
+        if self.base_image is None or self.sam_model is None or not self.sam_ready:
             return
         
         # Convert to image coordinates
@@ -613,117 +624,7 @@ class ImageView(QWidget):
                 # Normal overlay for non-hovered segments
                 overlay[mask] = (0.6 * overlay[mask] + 0.4 * np.array(color, dtype=np.uint8)).astype(np.uint8)
             
-            # Draw label text on finalized segment
-            label_name = self.label_info.get(label_id, {}).get('name', 'Unknown')
-            
-            # Find a good position to place text (use bounding box top-left)
-            if mask.any():
-                # Get bounding box of mask
-                rows = np.any(mask, axis=1)
-                cols = np.any(mask, axis=0)
-                if rows.any() and cols.any():
-                    ymin, ymax = np.where(rows)[0][[0, -1]]
-                    xmin, xmax = np.where(cols)[0][[0, -1]]
-                    
-                    # Get text size for positioning
-                    font = cv2.FONT_HERSHEY_SIMPLEX
-                    font_scale = 0.35  # Even smaller font
-                    thickness = 1  # Thinner text
-                    (text_width, text_height), baseline = cv2.getTextSize(
-                        label_name, font, font_scale, thickness
-                    )
-                    
-                    # Padding for the box
-                    padding = 4
-                    border_thickness = 1
-                    corner_radius = 3
-                    
-                    # Box dimensions
-                    box_x1 = int(xmin)
-                    box_y1 = int(ymin) - text_height - padding * 2
-                    box_x2 = box_x1 + text_width + padding * 2
-                    box_y2 = int(ymin) + baseline
-                    
-                    # Get image dimensions for bounds checking
-                    img_h, img_w = overlay.shape[:2]
-                    
-                    # Adjust position if box goes out of bounds vertically
-                    if box_y1 < 0:
-                        # Not enough space at top, place below segment
-                        box_y1 = int(ymax) + padding
-                        box_y2 = box_y1 + text_height + padding * 2
-                        # Make sure it's still within bounds
-                        if box_y2 >= img_h:
-                            box_y1 = int(ymin) + 5  # Place inside segment near top
-                            box_y2 = box_y1 + text_height + padding * 2
-                    
-                    # Ensure box is within image bounds horizontally
-                    if box_x2 >= img_w:
-                        box_x2 = img_w - 3
-                        box_x1 = box_x2 - text_width - padding * 2
-                    if box_x1 < 0:
-                        box_x1 = 3
-                        box_x2 = box_x1 + text_width + padding * 2
-                    
-                    # Clamp box coordinates to image bounds
-                    box_x1 = max(0, box_x1)
-                    box_y1 = max(0, box_y1)
-                    box_x2 = min(img_w - 1, box_x2)
-                    box_y2 = min(img_h - 1, box_y2)
-                    
-                    # Draw rounded rectangle background (white)
-                    # Fill center rectangle
-                    cv2.rectangle(overlay, (box_x1 + corner_radius, box_y1), 
-                                (box_x2 - corner_radius, box_y2), (255, 255, 255), -1)
-                    cv2.rectangle(overlay, (box_x1, box_y1 + corner_radius), 
-                                (box_x2, box_y2 - corner_radius), (255, 255, 255), -1)
-                    
-                    # Draw rounded corners using filled circles
-                    cv2.circle(overlay, (box_x1 + corner_radius, box_y1 + corner_radius), 
-                              corner_radius, (255, 255, 255), -1)
-                    cv2.circle(overlay, (box_x2 - corner_radius, box_y1 + corner_radius), 
-                              corner_radius, (255, 255, 255), -1)
-                    cv2.circle(overlay, (box_x1 + corner_radius, box_y2 - corner_radius), 
-                              corner_radius, (255, 255, 255), -1)
-                    cv2.circle(overlay, (box_x2 - corner_radius, box_y2 - corner_radius), 
-                              corner_radius, (255, 255, 255), -1)
-                    
-                    # Draw black border
-                    # Top and bottom lines
-                    cv2.line(overlay, (box_x1 + corner_radius, box_y1), 
-                            (box_x2 - corner_radius, box_y1), (0, 0, 0), border_thickness)
-                    cv2.line(overlay, (box_x1 + corner_radius, box_y2), 
-                            (box_x2 - corner_radius, box_y2), (0, 0, 0), border_thickness)
-                    # Left and right lines
-                    cv2.line(overlay, (box_x1, box_y1 + corner_radius), 
-                            (box_x1, box_y2 - corner_radius), (0, 0, 0), border_thickness)
-                    cv2.line(overlay, (box_x2, box_y1 + corner_radius), 
-                            (box_x2, box_y2 - corner_radius), (0, 0, 0), border_thickness)
-                    
-                    # Draw rounded corner borders (arcs)
-                    cv2.ellipse(overlay, (box_x1 + corner_radius, box_y1 + corner_radius), 
-                               (corner_radius, corner_radius), 180, 0, 90, (0, 0, 0), border_thickness)
-                    cv2.ellipse(overlay, (box_x2 - corner_radius, box_y1 + corner_radius), 
-                               (corner_radius, corner_radius), 270, 0, 90, (0, 0, 0), border_thickness)
-                    cv2.ellipse(overlay, (box_x1 + corner_radius, box_y2 - corner_radius), 
-                               (corner_radius, corner_radius), 90, 0, 90, (0, 0, 0), border_thickness)
-                    cv2.ellipse(overlay, (box_x2 - corner_radius, box_y2 - corner_radius), 
-                               (corner_radius, corner_radius), 0, 0, 90, (0, 0, 0), border_thickness)
-                    
-                    # Draw text inside the box
-                    text_x = box_x1 + padding
-                    text_y = box_y1 + text_height + padding
-                    text_color = (0, 0, 0)  # Black text
-                    cv2.putText(
-                        overlay,
-                        label_name,
-                        (text_x, text_y),
-                        font,
-                        font_scale,
-                        text_color,
-                        thickness,
-                        cv2.LINE_AA
-                    )
+            # Label text is no longer shown on image view (shown in segment panel instead)
         
         # Draw current mask being built
         if self.current_mask is not None:
@@ -749,10 +650,41 @@ class ImageView(QWidget):
                 cv2.circle(overlay, (int(x), int(y)), 4, (0, 0, 255), -1)
                 cv2.circle(overlay, (int(x), int(y)), 4, (0, 0, 200), 1)
         
-        # Draw bounding box if present
+        # Draw bounding box if present (dotted line)
         if self.bounding_box is not None:
             xmin, ymin, xmax, ymax = self.bounding_box
-            cv2.rectangle(overlay, (xmin, ymin), (xmax, ymax), (0, 0, 255), 2)
+            color = (0, 0, 255)  # Red in BGR
+            thickness = 1
+            dash_length = 10
+            gap_length = 5
+            
+            # Draw top edge
+            x = xmin
+            while x < xmax:
+                end_x = min(x + dash_length, xmax)
+                cv2.line(overlay, (x, ymin), (end_x, ymin), color, thickness)
+                x += dash_length + gap_length
+            
+            # Draw bottom edge
+            x = xmin
+            while x < xmax:
+                end_x = min(x + dash_length, xmax)
+                cv2.line(overlay, (x, ymax), (end_x, ymax), color, thickness)
+                x += dash_length + gap_length
+            
+            # Draw left edge
+            y = ymin
+            while y < ymax:
+                end_y = min(y + dash_length, ymax)
+                cv2.line(overlay, (xmin, y), (xmin, end_y), color, thickness)
+                y += dash_length + gap_length
+            
+            # Draw right edge
+            y = ymin
+            while y < ymax:
+                end_y = min(y + dash_length, ymax)
+                cv2.line(overlay, (xmax, y), (xmax, end_y), color, thickness)
+                y += dash_length + gap_length
         
         return overlay
     
@@ -866,16 +798,18 @@ class ImageView(QWidget):
     def mousePressEvent(self, event):
         """Handle mouse press events"""
         if self.active_tool == "pan" and event.button() == Qt.LeftButton:
-            # Start panning
+            # Start panning (always allow panning)
             self.is_panning = True
             self.last_pan_pos = event.pos()
             self.setCursor(Qt.ClosedHandCursor)
         elif event.button() == Qt.LeftButton and self.active_tool == "segment":
-            # Left click: positive point
-            self.add_point(event.x(), event.y(), True)
+            # Left click: positive point (only if SAM is ready)
+            if self.sam_ready:
+                self.add_point(event.x(), event.y(), True)
         elif event.button() == Qt.RightButton and self.active_tool == "segment":
-            # Right click: negative point
-            self.add_point(event.x(), event.y(), False)
+            # Right click: negative point (only if SAM is ready)
+            if self.sam_ready:
+                self.add_point(event.x(), event.y(), False)
         super().mousePressEvent(event)
     
     def mouseMoveEvent(self, event):
@@ -1030,6 +964,107 @@ class ImageView(QWidget):
         self.finalized_labels = []
         self.current_points = []
         self.current_mask = None
+        self.update_display()
+        self.update()
+    
+    def fit_to_bounding_box(self):
+        """
+        Fit the view to show the bounding box with some padding
+        """
+        if self.bounding_box is None or self.base_image is None:
+            return
+        
+        # Get widget dimensions
+        widget_w = self.width()
+        widget_h = self.height()
+        
+        if widget_w <= 1 or widget_h <= 1:
+            # Widget not sized yet, try again later
+            QTimer.singleShot(100, self.fit_to_bounding_box)
+            return
+        
+        # Get bounding box coordinates
+        xmin, ymin, xmax, ymax = self.bounding_box
+        
+        # Get image dimensions
+        img_h, img_w = self.base_image.shape[:2]
+        
+        # Calculate bounding box size
+        bbox_w = xmax - xmin
+        bbox_h = ymax - ymin
+        
+        # Add padding (10% on each side)
+        padding_factor = 0.05
+        padded_w = bbox_w * (1 + 2 * padding_factor)
+        padded_h = bbox_h * (1 + 2 * padding_factor)
+        
+        # Calculate the scale needed to fit the bounding box in the widget
+        # We need to account for base_scale (which fits image to widget without upscaling)
+        # First calculate base_scale to fit image
+        base_scale_w = widget_w / img_w
+        base_scale_h = widget_h / img_h
+        self.base_scale = min(base_scale_w, base_scale_h, 1.0)
+        
+        # Now calculate what zoom_scale would make the padded bbox fit
+        # After base_scale, the bbox would be: bbox_w * base_scale, bbox_h * base_scale
+        # We want: padded_w * base_scale * zoom_scale <= widget_w * margin
+        # And: padded_h * base_scale * zoom_scale <= widget_h * margin
+        # Where margin is like 0.9 to leave some space
+        
+        margin = 0.9  # Use 90% of widget space
+        zoom_scale_w = (widget_w * margin) / (padded_w * self.base_scale) if padded_w > 0 else 1.0
+        zoom_scale_h = (widget_h * margin) / (padded_h * self.base_scale) if padded_h > 0 else 1.0
+        self.zoom_scale = min(zoom_scale_w, zoom_scale_h)
+        
+        # Don't zoom out (zoom_scale < 1.0 means zooming out beyond base fit)
+        # We want to zoom in to fit bbox, so minimum is 1.0 (no additional zoom)
+        if self.zoom_scale < 1.0:
+            self.zoom_scale = 1.0
+        
+        # Limit max zoom
+        if self.zoom_scale > 5.0:
+            self.zoom_scale = 5.0
+        
+        # Calculate display scale
+        self.display_scale = self.base_scale * self.zoom_scale
+        
+        # Calculate the center of the bounding box in image coordinates
+        bbox_center_x = (xmin + xmax) / 2.0
+        bbox_center_y = (ymin + ymax) / 2.0
+        
+        # Calculate where the bbox center should be in widget coordinates to center it
+        # We want: widget_center = bbox_center_img * display_scale + image_offset + pan_offset
+        # So: pan_offset = widget_center - bbox_center_img * display_scale - image_offset
+        
+        # First update display to get correct image offset calculations
+        self.update_display()
+        
+        # Recalculate image offset (same as in paintEvent)
+        base_display_w = int(img_w * self.base_scale)
+        base_display_h = int(img_h * self.base_scale)
+        self.image_offset_x = (widget_w - base_display_w) // 2
+        self.image_offset_y = (widget_h - base_display_h) // 2
+        
+        # Adjust for zoom
+        if self.zoom_scale > 1.0:
+            zoom_diff_w = (self.display_image.width() - base_display_w) // 2
+            zoom_diff_h = (self.display_image.height() - base_display_h) // 2
+            self.image_offset_x -= zoom_diff_w
+            self.image_offset_y -= zoom_diff_h
+        
+        # Calculate pan offset to center bounding box
+        widget_center_x = widget_w / 2.0
+        widget_center_y = widget_h / 2.0
+        
+        # Position where bbox center would be without pan
+        bbox_center_in_widget_x = bbox_center_x * self.display_scale + self.image_offset_x
+        bbox_center_in_widget_y = bbox_center_y * self.display_scale + self.image_offset_y
+        
+        # Calculate pan offset to center it
+        self.pan_offset_x = widget_center_x - bbox_center_in_widget_x
+        self.pan_offset_y = widget_center_y - bbox_center_in_widget_y
+        
+        # Update display
         self.update_display()
         self.update()
     

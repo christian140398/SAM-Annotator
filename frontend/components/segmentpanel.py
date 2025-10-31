@@ -40,15 +40,34 @@ class SegmentItem(QFrame):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
         
-        # Label name text
+        # Get label info
         label_name = "Unlabeled"
+        label_color = "#ffffff"  # Default white color
         if self.segment.get('labelId'):
             label = next((l for l in self.all_labels if l.get('id') == self.segment.get('labelId')), None)
             if label:
                 label_name = label.get('name', 'Unlabeled')
+                label_color = label.get('color', '#ffffff')
         
+        # Color circle indicator
+        color_circle = QLabel()
+        color_circle.setFixedSize(12, 12)
+        color_circle.setStyleSheet(f"""
+            background-color: {label_color};
+            border-radius: 6px;
+            border: 1px solid {ITEM_BORDER};
+        """)
+        layout.addWidget(color_circle)
+        
+        # Label name text (no background box)
         self.name_label = QLabel(label_name)
-        self.name_label.setStyleSheet(f"font-size: 14px; color: {TEXT_COLOR};")
+        self.name_label.setStyleSheet(f"""
+            font-size: 14px; 
+            color: {TEXT_COLOR};
+            background-color: transparent;
+            border: none;
+            padding: 0px;
+        """)
         layout.addWidget(self.name_label)
         layout.addStretch()
         
