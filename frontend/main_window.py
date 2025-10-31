@@ -113,6 +113,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("SAM Annotator")
+        # Window will open in fullscreen, geometry set as fallback
         self.setGeometry(100, 100, 1400, 900)
         
         # Set main window background color
@@ -222,7 +223,8 @@ class MainWindow(QMainWindow):
         # Setup keyboard shortcuts
         self.setup_shortcuts()
         
-        self.show()
+        # Show window in fullscreen mode
+        self.showFullScreen()
         
         # Load first image if available (do this after show() so widget is ready)
         if self.image_paths:
@@ -377,18 +379,38 @@ class MainWindow(QMainWindow):
         shortcut_u = QShortcut(QKeySequence("U"), self)
         shortcut_u.activated.connect(self.undo_action)
         
-        # S - Save and next image
-        shortcut_s = QShortcut(QKeySequence("S"), self)
-        shortcut_s.activated.connect(self.save_and_next_image)
+        # H - Pan tool
+        shortcut_h = QShortcut(QKeySequence("H"), self)
+        shortcut_h.activated.connect(lambda: self.select_tool("pan"))
+        
+        # S - Segment tool
+        shortcut_s_tool = QShortcut(QKeySequence("S"), self)
+        shortcut_s_tool.activated.connect(lambda: self.select_tool("segment"))
+        
+        # Ctrl+S - Save and next image (changed from S to avoid conflict)
+        shortcut_save = QShortcut(QKeySequence("Ctrl+S"), self)
+        shortcut_save.activated.connect(self.save_and_next_image)
         
         # Q - Quit
         shortcut_q = QShortcut(QKeySequence("Q"), self)
         shortcut_q.activated.connect(self.close)
     
+    def select_tool(self, tool_id: str):
+        """Select a tool by ID (can be called from keyboard shortcuts)"""
+        # Set active tool in toolbar (this will emit signal and update image view)
+        self.toolbar.set_active_tool(tool_id)
+        if tool_id != "fit_bbox":
+            self.toolbar.tool_changed.emit(tool_id)
+    
     def on_tool_changed(self, tool_id: str):
         """Handle tool change from toolbar"""
-        self.image_view.active_tool = tool_id
-        self.image_view.update_cursor()
+        if tool_id == "fit_bbox":
+            # This is an action, not a tool - fit view to bounding box
+            self.image_view.fit_to_bounding_box()
+        else:
+            # Regular tool selection
+            self.image_view.active_tool = tool_id
+            self.image_view.update_cursor()
     
     def on_label_selected(self, label_id: str):
         """Handle label selection from topbar"""

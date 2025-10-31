@@ -75,8 +75,9 @@ class KeybindsBar(QWidget):
     
     # Default keybinds based on React component and actual implementation
     DEFAULT_KEYBINDS = [
-        {"key": "H", "label": "Pan"},
-        {"key": "S", "label": "Save & next image"},
+        {"key": "H", "label": "Pan tool"},
+        {"key": "S", "label": "Segment tool"},
+        {"key": "Ctrl+S", "label": "Save & next image"},
         {"key": "Scroll", "label": "Zoom"},
         {"key": "N", "label": "Finalize segment"},
         {"key": "U", "label": "Undo last point"},

@@ -16,8 +16,9 @@ Tool = Literal["select", "point", "box", "brush", "erase", "pan", "segment"]
 
 # Tool definitions with icons (using Unicode/emoji symbols)
 TOOLS = [
-    {"id": "pan", "icon": "✋", "label": "Pan", "shortcut": "H"},
     {"id": "segment", "icon": "✂", "label": "Segment", "shortcut": "S"},
+    {"id": "pan", "icon": "✋", "label": "Pan", "shortcut": "H"},
+    {"id": "fit_bbox", "icon": "⬜", "label": "Fit to Bounding Box", "shortcut": "F"},
 ]
 
 
@@ -110,6 +111,9 @@ class Toolbar(QWidget):
         self.apply_styles()
         
         self.setup_ui()
+        
+        # Set default active tool to "segment"
+        self.set_active_tool("segment")
     
     def setup_ui(self):
         """Set up the UI layout"""
@@ -148,8 +152,13 @@ class Toolbar(QWidget):
     
     def on_tool_clicked(self, tool_id: str):
         """Handle tool button click"""
-        self.set_active_tool(tool_id)
-        self.tool_changed.emit(tool_id)
+        # fit_bbox is an action, not a tool - it doesn't change active tool state
+        if tool_id == "fit_bbox":
+            # Just emit the signal without changing active tool
+            self.tool_changed.emit(tool_id)
+        else:
+            self.set_active_tool(tool_id)
+            self.tool_changed.emit(tool_id)
     
     def set_active_tool(self, tool_id: Optional[Tool]):
         """Set the active tool"""
