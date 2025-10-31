@@ -272,6 +272,7 @@ class MainWindow(QMainWindow):
         self.segments_panel.segment_deleted.connect(self.on_segment_deleted)
         self.segments_panel.visibility_toggled.connect(self.on_segment_visibility_toggled)
         self.segments_panel.label_updated.connect(self.on_segment_label_updated)
+        self.segments_panel.segment_hovered.connect(self.on_segment_hovered)
         
         # Topbar -> MainWindow
         self.topbar.label_selected.connect(self.on_label_selected)
@@ -351,6 +352,19 @@ class MainWindow(QMainWindow):
         """Handle segment selection from panel"""
         # TODO: Highlight selected segment in image view
     
+    def on_segment_hovered(self, segment_id: str, is_hovered: bool):
+        """Handle segment hover from panel"""
+        # Find segment index from ID mapping
+        segment_idx = None
+        if hasattr(self, '_segment_id_map'):
+            for idx, seg_id in self._segment_id_map.items():
+                if seg_id == segment_id:
+                    segment_idx = idx
+                    break
+        
+        # Set hovered segment index (None if not hovering)
+        self.image_view.set_hovered_segment_index(segment_idx if is_hovered else None)
+    
     def on_segment_deleted(self, segment_id: str):
         """Handle segment deletion from panel"""
         # Find segment index from ID mapping
@@ -427,6 +441,53 @@ class MainWindow(QMainWindow):
         
         self.segments_panel.set_segments(segment_dicts)
     
+    def _load_input_objects(self, xml_path: Optional[str]) -> List[Dict]:
+        """
+        Load all objects with their bounding boxes from input XML file
+        
+        Args:
+            xml_path: Path to input XML file, or None
+            
+        Returns:
+            List of dicts with keys: 'name', 'bbox' (xmin, ymin, xmax, ymax), 'truncated', 'difficult'
+        """
+        input_objects = []
+        if xml_path and os.path.isfile(xml_path):
+            try:
+                tree = ET.parse(xml_path)
+                root = tree.getroot()
+                
+                for obj in root.findall("object"):
+                    name_elem = obj.find("name")
+                    name = name_elem.text if name_elem is not None else "unknown"
+                    
+                    bndbox_elem = obj.find("bndbox")
+                    if bndbox_elem is not None:
+                        try:
+                            xmin = int(float(bndbox_elem.find("xmin").text))
+                            ymin = int(float(bndbox_elem.find("ymin").text))
+                            xmax = int(float(bndbox_elem.find("xmax").text))
+                            ymax = int(float(bndbox_elem.find("ymax").text))
+                            
+                            truncated_elem = obj.find("truncated")
+                            truncated = truncated_elem.text if truncated_elem is not None else "0"
+                            
+                            difficult_elem = obj.find("difficult")
+                            difficult = difficult_elem.text if difficult_elem is not None else "0"
+                            
+                            input_objects.append({
+                                'name': name,
+                                'bbox': (xmin, ymin, xmax, ymax),
+                                'truncated': truncated,
+                                'difficult': difficult
+                            })
+                        except (ValueError, AttributeError):
+                            continue
+            except Exception as e:
+                print(f"Warning: Could not load input XML objects: {e}")
+        
+        return input_objects
+    
     def save_voc_xml(self, xml_path: str, image_path: str, segments: List[tuple]):
         """
         Save segments as VOC XML annotation file
@@ -442,6 +503,9 @@ class MainWindow(QMainWindow):
             return False
         
         h, w = img.shape[:2]
+        
+        # Load input objects if available
+        input_objects = self._load_input_objects(self.current_xml_path)
         
         # Create XML root
         root = ET.Element("annotation")
@@ -476,7 +540,38 @@ class MainWindow(QMainWindow):
         segmented_elem = ET.SubElement(root, "segmented")
         segmented_elem.text = "1" if segments else "0"
         
-        # Add objects for each segment
+        # First, copy all original objects from input XML file (with their original bounding boxes)
+        if input_objects:
+            print(f"Copying {len(input_objects)} original object(s) from input XML...")
+            for inp_obj in input_objects:
+                # Create object element for original object
+                obj_elem = ET.SubElement(root, "object")
+                
+                name_elem = ET.SubElement(obj_elem, "name")
+                name_elem.text = inp_obj['name']
+                
+                pose_elem = ET.SubElement(obj_elem, "pose")
+                pose_elem.text = "Unspecified"
+                
+                truncated_elem = ET.SubElement(obj_elem, "truncated")
+                truncated_elem.text = inp_obj.get('truncated', '0')
+                
+                difficult_elem = ET.SubElement(obj_elem, "difficult")
+                difficult_elem.text = inp_obj.get('difficult', '0')
+                
+                # Original bounding box
+                xmin, ymin, xmax, ymax = inp_obj['bbox']
+                bndbox_elem = ET.SubElement(obj_elem, "bndbox")
+                xmin_elem = ET.SubElement(bndbox_elem, "xmin")
+                xmin_elem.text = str(max(0, min(w - 1, xmin)))
+                ymin_elem = ET.SubElement(bndbox_elem, "ymin")
+                ymin_elem.text = str(max(0, min(h - 1, ymin)))
+                xmax_elem = ET.SubElement(bndbox_elem, "xmax")
+                xmax_elem.text = str(max(0, min(w - 1, xmax)))
+                ymax_elem = ET.SubElement(bndbox_elem, "ymax")
+                ymax_elem.text = str(max(0, min(h - 1, ymax)))
+        
+        # Now add objects for each segment (with polygon segmentations)
         for mask, label_id in segments:
             # Get label name
             label_name = "UAV"  # Default
@@ -494,10 +589,18 @@ class MainWindow(QMainWindow):
             }).tolist()
             
             x, y, bbox_w, bbox_h = bbox
-            xmin = int(x)
-            ymin = int(y)
-            xmax = int(x + bbox_w)
-            ymax = int(y + bbox_h)
+            seg_xmin = int(x)
+            seg_ymin = int(y)
+            seg_xmax = int(x + bbox_w)
+            seg_ymax = int(y + bbox_h)
+            
+            # Use calculated bounding box from mask for segmented objects
+            xmin = seg_xmin
+            ymin = seg_ymin
+            xmax = seg_xmax
+            ymax = seg_ymax
+            truncated = "0"
+            difficult = "0"
             
             # Create object element
             obj_elem = ET.SubElement(root, "object")
@@ -509,21 +612,21 @@ class MainWindow(QMainWindow):
             pose_elem.text = "Unspecified"
             
             truncated_elem = ET.SubElement(obj_elem, "truncated")
-            truncated_elem.text = "0"
+            truncated_elem.text = truncated
             
             difficult_elem = ET.SubElement(obj_elem, "difficult")
-            difficult_elem.text = "0"
+            difficult_elem.text = difficult
             
             # Bounding box
             bndbox_elem = ET.SubElement(obj_elem, "bndbox")
             xmin_elem = ET.SubElement(bndbox_elem, "xmin")
-            xmin_elem.text = str(max(0, xmin))
+            xmin_elem.text = str(max(0, min(w - 1, xmin)))
             ymin_elem = ET.SubElement(bndbox_elem, "ymin")
-            ymin_elem.text = str(max(0, ymin))
+            ymin_elem.text = str(max(0, min(h - 1, ymin)))
             xmax_elem = ET.SubElement(bndbox_elem, "xmax")
-            xmax_elem.text = str(min(w - 1, xmax))
+            xmax_elem.text = str(max(0, min(w - 1, xmax)))
             ymax_elem = ET.SubElement(bndbox_elem, "ymax")
-            ymax_elem.text = str(min(h - 1, ymax))
+            ymax_elem.text = str(max(0, min(h - 1, ymax)))
             
             # Add segmentation polygon
             # Convert mask to polygon coordinates

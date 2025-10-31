@@ -51,6 +51,7 @@ class ImageView(QWidget):
         self.finalized_labels: List[str] = []  # Label IDs
         self.current_label_id: Optional[str] = None
         self.bounding_box: Optional[Tuple[int, int, int, int]] = None  # (xmin, ymin, xmax, ymax)
+        self.hovered_segment_index: Optional[int] = None  # Index of hovered segment
         
         # Label color palette (label_id -> BGR color tuple)
         self.label_colors: dict = {}
@@ -223,6 +224,7 @@ class ImageView(QWidget):
         self.current_mask = None
         self.finalized_masks = []
         self.finalized_labels = []
+        self.hovered_segment_index = None
         
         # Reset pan/zoom
         self.pan_offset_x = 0
@@ -252,6 +254,12 @@ class ImageView(QWidget):
         """Set the current label for new segments"""
         self.current_label_id = label_id
         self.update_label_indicator()
+    
+    def set_hovered_segment_index(self, segment_index: Optional[int]):
+        """Set the hovered segment index for highlighting"""
+        self.hovered_segment_index = segment_index
+        self.update_display()
+        self.update()
     
     def widget_to_image_coords(self, widget_x: int, widget_y: int) -> Optional[Tuple[int, int]]:
         """
@@ -406,9 +414,134 @@ class ImageView(QWidget):
         overlay = img.copy()
         
         # Draw finalized masks
-        for mask, label_id in zip(self.finalized_masks, self.finalized_labels):
+        for idx, (mask, label_id) in enumerate(zip(self.finalized_masks, self.finalized_labels)):
             color = self.label_colors.get(label_id, (255, 0, 0))
-            overlay[mask] = (0.6 * overlay[mask] + 0.4 * np.array(color, dtype=np.uint8)).astype(np.uint8)
+            
+            # Highlight hovered segment with brighter color and border
+            if idx == self.hovered_segment_index:
+                # Brighter overlay for hovered segment
+                overlay[mask] = (0.4 * overlay[mask] + 0.6 * np.array(color, dtype=np.uint8)).astype(np.uint8)
+                
+                # Draw border around hovered segment
+                mask_uint8 = (mask * 255).astype(np.uint8)
+                contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                highlight_color = (255, 255, 255)  # White border for hover
+                cv2.drawContours(overlay, contours, -1, highlight_color, 1)
+            else:
+                # Normal overlay for non-hovered segments
+                overlay[mask] = (0.6 * overlay[mask] + 0.4 * np.array(color, dtype=np.uint8)).astype(np.uint8)
+            
+            # Draw label text on finalized segment
+            label_name = self.label_info.get(label_id, {}).get('name', 'Unknown')
+            
+            # Find a good position to place text (use bounding box top-left)
+            if mask.any():
+                # Get bounding box of mask
+                rows = np.any(mask, axis=1)
+                cols = np.any(mask, axis=0)
+                if rows.any() and cols.any():
+                    ymin, ymax = np.where(rows)[0][[0, -1]]
+                    xmin, xmax = np.where(cols)[0][[0, -1]]
+                    
+                    # Get text size for positioning
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    font_scale = 0.35  # Even smaller font
+                    thickness = 1  # Thinner text
+                    (text_width, text_height), baseline = cv2.getTextSize(
+                        label_name, font, font_scale, thickness
+                    )
+                    
+                    # Padding for the box
+                    padding = 4
+                    border_thickness = 1
+                    corner_radius = 3
+                    
+                    # Box dimensions
+                    box_x1 = int(xmin)
+                    box_y1 = int(ymin) - text_height - padding * 2
+                    box_x2 = box_x1 + text_width + padding * 2
+                    box_y2 = int(ymin) + baseline
+                    
+                    # Get image dimensions for bounds checking
+                    img_h, img_w = overlay.shape[:2]
+                    
+                    # Adjust position if box goes out of bounds vertically
+                    if box_y1 < 0:
+                        # Not enough space at top, place below segment
+                        box_y1 = int(ymax) + padding
+                        box_y2 = box_y1 + text_height + padding * 2
+                        # Make sure it's still within bounds
+                        if box_y2 >= img_h:
+                            box_y1 = int(ymin) + 5  # Place inside segment near top
+                            box_y2 = box_y1 + text_height + padding * 2
+                    
+                    # Ensure box is within image bounds horizontally
+                    if box_x2 >= img_w:
+                        box_x2 = img_w - 3
+                        box_x1 = box_x2 - text_width - padding * 2
+                    if box_x1 < 0:
+                        box_x1 = 3
+                        box_x2 = box_x1 + text_width + padding * 2
+                    
+                    # Clamp box coordinates to image bounds
+                    box_x1 = max(0, box_x1)
+                    box_y1 = max(0, box_y1)
+                    box_x2 = min(img_w - 1, box_x2)
+                    box_y2 = min(img_h - 1, box_y2)
+                    
+                    # Draw rounded rectangle background (white)
+                    # Fill center rectangle
+                    cv2.rectangle(overlay, (box_x1 + corner_radius, box_y1), 
+                                (box_x2 - corner_radius, box_y2), (255, 255, 255), -1)
+                    cv2.rectangle(overlay, (box_x1, box_y1 + corner_radius), 
+                                (box_x2, box_y2 - corner_radius), (255, 255, 255), -1)
+                    
+                    # Draw rounded corners using filled circles
+                    cv2.circle(overlay, (box_x1 + corner_radius, box_y1 + corner_radius), 
+                              corner_radius, (255, 255, 255), -1)
+                    cv2.circle(overlay, (box_x2 - corner_radius, box_y1 + corner_radius), 
+                              corner_radius, (255, 255, 255), -1)
+                    cv2.circle(overlay, (box_x1 + corner_radius, box_y2 - corner_radius), 
+                              corner_radius, (255, 255, 255), -1)
+                    cv2.circle(overlay, (box_x2 - corner_radius, box_y2 - corner_radius), 
+                              corner_radius, (255, 255, 255), -1)
+                    
+                    # Draw black border
+                    # Top and bottom lines
+                    cv2.line(overlay, (box_x1 + corner_radius, box_y1), 
+                            (box_x2 - corner_radius, box_y1), (0, 0, 0), border_thickness)
+                    cv2.line(overlay, (box_x1 + corner_radius, box_y2), 
+                            (box_x2 - corner_radius, box_y2), (0, 0, 0), border_thickness)
+                    # Left and right lines
+                    cv2.line(overlay, (box_x1, box_y1 + corner_radius), 
+                            (box_x1, box_y2 - corner_radius), (0, 0, 0), border_thickness)
+                    cv2.line(overlay, (box_x2, box_y1 + corner_radius), 
+                            (box_x2, box_y2 - corner_radius), (0, 0, 0), border_thickness)
+                    
+                    # Draw rounded corner borders (arcs)
+                    cv2.ellipse(overlay, (box_x1 + corner_radius, box_y1 + corner_radius), 
+                               (corner_radius, corner_radius), 180, 0, 90, (0, 0, 0), border_thickness)
+                    cv2.ellipse(overlay, (box_x2 - corner_radius, box_y1 + corner_radius), 
+                               (corner_radius, corner_radius), 270, 0, 90, (0, 0, 0), border_thickness)
+                    cv2.ellipse(overlay, (box_x1 + corner_radius, box_y2 - corner_radius), 
+                               (corner_radius, corner_radius), 90, 0, 90, (0, 0, 0), border_thickness)
+                    cv2.ellipse(overlay, (box_x2 - corner_radius, box_y2 - corner_radius), 
+                               (corner_radius, corner_radius), 0, 0, 90, (0, 0, 0), border_thickness)
+                    
+                    # Draw text inside the box
+                    text_x = box_x1 + padding
+                    text_y = box_y1 + text_height + padding
+                    text_color = (0, 0, 0)  # Black text
+                    cv2.putText(
+                        overlay,
+                        label_name,
+                        (text_x, text_y),
+                        font,
+                        font_scale,
+                        text_color,
+                        thickness,
+                        cv2.LINE_AA
+                    )
         
         # Draw current mask being built
         if self.current_mask is not None:

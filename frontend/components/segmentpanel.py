@@ -5,74 +5,30 @@ Replicates the functionality of the React SegmentsPanel component
 from typing import Optional, List, Dict, Any
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QLineEdit, QComboBox, QScrollArea, QFrame
+    QLineEdit, QScrollArea, QFrame
 )
-from PySide6.QtCore import Qt, Signal, QSize
-from PySide6.QtGui import QColor, QPainter
-from PySide6.QtWidgets import QStyledItemDelegate
+from PySide6.QtCore import Qt, Signal
 from frontend.theme import (
     ITEM_BG, ITEM_BORDER, TEXT_COLOR,
     BACKGROUND_MAIN, PRIMARY_COLOR
 )
 
 
-class LabelComboDelegate(QStyledItemDelegate):
-    """Custom delegate for rendering label items with color dots in combo box"""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.labels = []
-    
-    def set_labels(self, labels: List[Dict[str, Any]]):
-        """Set the labels for rendering"""
-        self.labels = labels
-    
-    def paint(self, painter, option, index):
-        """Paint the item with color dot"""
-        if index.row() >= len(self.labels):
-            super().paint(painter, option, index)
-            return
-        
-        label = self.labels[index.row()]
-        
-        # Draw selection background
-        if option.state & option.State_Selected:
-            painter.fillRect(option.rect, QColor(ITEM_BORDER))
-        else:
-            painter.fillRect(option.rect, QColor(ITEM_BG))
-        
-        # Draw color dot
-        dot_size = 12
-        dot_x = option.rect.left() + 8
-        dot_y = option.rect.center().y() - dot_size // 2
-        
-        painter.setRenderHint(QPainter.Antialiasing)
-        color = QColor(label.get('color', '#ffffff'))
-        painter.setBrush(color)
-        painter.setPen(Qt.NoPen)
-        painter.drawEllipse(dot_x, dot_y, dot_size, dot_size)
-        
-        # Draw text
-        text_x = dot_x + dot_size + 8
-        text_y = option.rect.center().y() + 5
-        painter.setPen(QColor(TEXT_COLOR))
-        painter.drawText(text_x, text_y, label.get('name', ''))
-    
-    def sizeHint(self, _option, _index):
-        """Return size hint for the item"""
-        return QSize(200, 24)
-
-
 class SegmentItem(QFrame):
     """Individual segment item widget"""
     def __init__(self, segment: Dict[str, Any], _label: Optional[Dict[str, Any]], 
                  all_labels: List[Dict[str, Any]], is_selected: bool, 
-                 on_click_callback=None, parent=None):
+                 on_click_callback=None, on_hover_callback=None, parent=None):
         super().__init__(parent)
         self.segment = segment
         self.is_selected = is_selected
         self.all_labels = all_labels
         self.segment_id = segment.get('id')  # Store segment ID for click handling
         self.on_click_callback = on_click_callback
+        self.on_hover_callback = on_hover_callback
+        
+        # Enable mouse tracking for hover detection
+        self.setMouseTracking(True)
         
         self.setup_ui()
         self.update_style()
@@ -80,59 +36,21 @@ class SegmentItem(QFrame):
     def setup_ui(self):
         """Set up the segment item UI"""
         self.setObjectName("SegmentItem")
-        layout = QVBoxLayout(self)
+        layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
         
-        # Top row: Label color dot, ID, and action buttons
-        top_layout = QHBoxLayout()
-        
-        # Left side: Label dot and ID
-        left_layout = QHBoxLayout()
-        left_layout.setSpacing(8)
-        
+        # Label name text
+        label_name = "Unlabeled"
         if self.segment.get('labelId'):
             label = next((l for l in self.all_labels if l.get('id') == self.segment.get('labelId')), None)
             if label:
-                # Color dot
-                dot_label = QLabel()
-                dot_label.setFixedSize(12, 12)
-                dot_label.setStyleSheet(f"""
-                    background-color: {label.get('color', '#ffffff')};
-                    border-radius: 6px;
-                """)
-                left_layout.addWidget(dot_label)
+                label_name = label.get('name', 'Unlabeled')
         
-        # Segment ID
-        segment_id = self.segment.get('id', '')[:8]  # First 8 chars
-        id_label = QLabel(f"ID: {segment_id}")
-        id_label.setObjectName("muted")
-        id_label.setStyleSheet("font-size: 11px; color: #9ca3af;")
-        left_layout.addWidget(id_label)
-        left_layout.addStretch()
-        
-        top_layout.addLayout(left_layout)
-        
-        # Right side: Action buttons
-        buttons_layout = QVBoxLayout()
-        buttons_layout.setSpacing(4)
-        
-        # Visibility toggle button
-        self.visibility_button = QPushButton("👁" if self.segment.get('visible', True) else "🚫")
-        self.visibility_button.setFixedSize(28, 28)
-        self.visibility_button.setToolTip("Toggle visibility")
-        self.visibility_button.setStyleSheet("""
-            QPushButton {
-                background-color: transparent;
-                border: none;
-                font-size: 14px;
-            }
-            QPushButton:hover {
-                background-color: #2b303b;
-                border-radius: 4px;
-            }
-        """)
-        buttons_layout.addWidget(self.visibility_button)
+        self.name_label = QLabel(label_name)
+        self.name_label.setStyleSheet(f"font-size: 14px; color: {TEXT_COLOR};")
+        layout.addWidget(self.name_label)
+        layout.addStretch()
         
         # Delete button
         self.delete_button = QPushButton("🗑")
@@ -150,68 +68,26 @@ class SegmentItem(QFrame):
                 border-radius: 4px;
             }
         """)
-        buttons_layout.addWidget(self.delete_button)
-        
-        top_layout.addLayout(buttons_layout)
-        
-        layout.addLayout(top_layout)
-        
-        # Label selector
-        self.label_combo = QComboBox()
-        self.label_combo.setStyleSheet(f"""
-            QComboBox {{
-                background-color: {ITEM_BG};
-                border: 1px solid {ITEM_BORDER};
-                color: {TEXT_COLOR};
-                padding: 4px 8px;
-                border-radius: 4px;
-                font-size: 11px;
-                height: 24px;
-            }}
-            QComboBox::drop-down {{
-                border: none;
-                width: 20px;
-            }}
-        """)
-        
-        # Set custom delegate
-        combo_delegate = LabelComboDelegate(self.label_combo)
-        combo_delegate.set_labels(self.all_labels)
-        self.label_combo.setItemDelegate(combo_delegate)
-        
-        # Add labels to combo
-        self.label_combo.addItem("Assign label", None)
-        for label in self.all_labels:
-            self.label_combo.addItem(label.get('name', ''), label.get('id'))
-        
-        # Select current label
-        current_label_id = self.segment.get('labelId')
-        if current_label_id:
-            for i in range(self.label_combo.count()):
-                if self.label_combo.itemData(i) == current_label_id:
-                    self.label_combo.setCurrentIndex(i)
-                    break
-        
-        layout.addWidget(self.label_combo)
-        
-        # Area information
-        area = self.segment.get('area', 0)
-        area_label = QLabel(f"Area: {area:,} px²")
-        area_label.setObjectName("muted")
-        area_label.setStyleSheet("font-size: 11px; color: #9ca3af;")
-        layout.addWidget(area_label)
-        
-        layout.addStretch()
-        
-        # Enable mouse tracking for click handling
-        self.setMouseTracking(True)
+        layout.addWidget(self.delete_button)
+    
+    def enterEvent(self, event):
+        """Handle mouse enter event (hover start)"""
+        if self.on_hover_callback and self.segment_id:
+            self.on_hover_callback(self.segment_id, True)
+        super().enterEvent(event)
+    
+    def leaveEvent(self, event):
+        """Handle mouse leave event (hover end)"""
+        if self.on_hover_callback and self.segment_id:
+            self.on_hover_callback(self.segment_id, False)
+        super().leaveEvent(event)
     
     def mousePressEvent(self, event):
         """Handle clicks on the segment item"""
         if event.button() == Qt.LeftButton:
-            # Don't propagate if clicking on buttons or combo box
+            # Don't propagate if clicking on delete button
             child = self.childAt(event.pos())
-            if child and (isinstance(child, QPushButton) or isinstance(child, QComboBox)):
+            if child and isinstance(child, QPushButton):
                 return
             
             # Call the click callback if provided
@@ -251,6 +127,7 @@ class SegmentsPanel(QWidget):
     segment_deleted = Signal(str)  # Emits segment_id when segment is deleted
     visibility_toggled = Signal(str)  # Emits segment_id when visibility is toggled
     label_updated = Signal(str, str)  # Emits (segment_id, label_id) when label is updated
+    segment_hovered = Signal(str, bool)  # Emits (segment_id, is_hovered) when segment is hovered
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -427,16 +304,11 @@ class SegmentsPanel(QWidget):
             is_selected = self.selected_segment_id == segment.get('id')
             
             item = SegmentItem(segment, label, self.labels, is_selected, 
-                             on_click_callback=self.on_segment_item_clicked)
+                             on_click_callback=self.on_segment_item_clicked,
+                             on_hover_callback=self.on_segment_item_hovered)
             
-            # Connect signals - use default parameters to capture loop variables correctly
+            # Connect delete button signal
             seg_id = segment.get('id')
-            item.label_combo.currentIndexChanged.connect(
-                lambda idx, sid=seg_id, itm=item: self.on_label_changed(idx, sid, itm)
-            )
-            item.visibility_button.clicked.connect(
-                lambda checked, sid=seg_id: self.on_toggle_visibility(sid)
-            )
             item.delete_button.clicked.connect(
                 lambda checked, sid=seg_id: self.on_delete(sid)
             )
@@ -452,6 +324,10 @@ class SegmentsPanel(QWidget):
             self.selected_segment_id = segment_id
             self.segment_selected.emit(segment_id)
         self.update_segments_display()
+    
+    def on_segment_item_hovered(self, segment_id: str, is_hovered: bool):
+        """Handle segment item hover"""
+        self.segment_hovered.emit(segment_id, is_hovered)
     
     def on_label_changed(self, index: int, segment_id: str, item: SegmentItem):
         """Handle label combo box change"""
