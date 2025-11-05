@@ -67,6 +67,7 @@ class ImageView(QWidget):
         self.is_panning = False
         self.last_pan_pos: Optional[QPoint] = None
         self.space_pressed = False  # Track if space key is held down for temporary pan mode
+        self.h_pressed = False  # Track if H key is held down for highlighting current segment
         
         # SAM model
         self.sam_model: Optional[SAMModel] = None
@@ -831,6 +832,13 @@ class ImageView(QWidget):
                 if mask_h == img_h and mask_w == img_w:
                     color = self.label_colors.get(self.current_label_id, (255, 0, 0))
                     overlay[self.current_mask] = (0.5 * overlay[self.current_mask] + 0.5 * np.array(color, dtype=np.uint8)).astype(np.uint8)
+                    
+                    # Draw white outline if H key is pressed (highlight current segment)
+                    if self.h_pressed:
+                        mask_uint8 = (self.current_mask * 255).astype(np.uint8)
+                        contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                        highlight_color = (255, 255, 255)  # White border for highlight
+                        cv2.drawContours(overlay, contours, -1, highlight_color, 1)  # Same thickness as hover outline
                 else:
                     # Clear invalid mask
                     self.current_mask = None
@@ -1168,6 +1176,12 @@ class ImageView(QWidget):
             elif not self.is_panning:
                 # Mouse not down, just show open hand cursor
                 self.setCursor(Qt.OpenHandCursor)
+        elif event.key() == Qt.Key_H and not event.isAutoRepeat():
+            # Only process initial key press, not auto-repeat
+            self.h_pressed = True
+            # Regenerate display image with highlight and trigger redraw
+            self.update_display()
+            self.update()
         super().keyPressEvent(event)
     
     def keyReleaseEvent(self, event: QKeyEvent):
@@ -1187,6 +1201,12 @@ class ImageView(QWidget):
                 self.update_cursor()
             # If mouse is still down when space is released, panning continues until mouse is released
             # This is handled in mouseReleaseEvent
+        elif event.key() == Qt.Key_H and not event.isAutoRepeat():
+            # Only process actual key release, not auto-repeat release
+            self.h_pressed = False
+            # Regenerate display image without highlight and trigger redraw
+            self.update_display()
+            self.update()
         super().keyReleaseEvent(event)
     
     def zoom_in_at_position(self, widget_x: float, widget_y: float, zoom_factor: float):

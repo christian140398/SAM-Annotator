@@ -1152,10 +1152,10 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error", f"Failed to save files: {str(e)}")
     
     def eventFilter(self, obj, event):
-        """Event filter to capture space key events globally"""
-        # Only process key events for space key
-        if isinstance(event, QKeyEvent) and event.key() == Qt.Key_Space:
-            # Forward space key events to image view regardless of focus
+        """Event filter to capture space key and H key events globally"""
+        # Process key events for space key and H key
+        if isinstance(event, QKeyEvent) and (event.key() == Qt.Key_Space or event.key() == Qt.Key_H):
+            # Forward space key and H key events to image view regardless of focus
             # Skip auto-repeat events to avoid interference
             if hasattr(self, 'image_view') and self.image_view:
                 if event.type() == QEvent.Type.KeyPress and not event.isAutoRepeat():
