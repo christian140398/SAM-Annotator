@@ -107,6 +107,27 @@ def load_labels_with_colors(label_file: str) -> Tuple[List[str], Dict[str, str]]
     return labels, colors
 
 
+def ensure_output_directories():
+    """
+    Create output directories if they don't exist and add .gitkeep files.
+    This ensures the directories are tracked in git even when empty.
+    """
+    os.makedirs(OUTPUT_IMG_DIR, exist_ok=True)
+    os.makedirs(OUTPUT_LABEL_DIR, exist_ok=True)
+    
+    # Create .gitkeep files in both directories
+    gitkeep_img = os.path.join(OUTPUT_IMG_DIR, ".gitkeep")
+    gitkeep_label = os.path.join(OUTPUT_LABEL_DIR, ".gitkeep")
+    
+    # Only create if they don't exist to avoid unnecessary file writes
+    if not os.path.exists(gitkeep_img):
+        with open(gitkeep_img, 'w') as f:
+            pass  # Create empty file
+    if not os.path.exists(gitkeep_label):
+        with open(gitkeep_label, 'w') as f:
+            pass  # Create empty file
+
+
 class MainWindow(QMainWindow):
     """Main application window"""
     
@@ -135,9 +156,8 @@ class MainWindow(QMainWindow):
         # Initialize labels
         self.init_labels()
         
-        # Create output directories if they don't exist
-        os.makedirs(OUTPUT_IMG_DIR, exist_ok=True)
-        os.makedirs(OUTPUT_LABEL_DIR, exist_ok=True)
+        # Create output directories if they don't exist (with .gitkeep files)
+        ensure_output_directories()
         
         # Load images
         self.load_image_list()
@@ -392,6 +412,10 @@ class MainWindow(QMainWindow):
         # Ctrl+S - Save and next image (changed from S to avoid conflict)
         shortcut_save = QShortcut(QKeySequence("Ctrl+S"), self)
         shortcut_save.activated.connect(self.save_and_next_image)
+        
+        # M - Skip image (move to next without saving)
+        shortcut_skip = QShortcut(QKeySequence("M"), self)
+        shortcut_skip.activated.connect(self.skip_image)
         
         # Q - Quit
         shortcut_q = QShortcut(QKeySequence("Q"), self)
@@ -804,6 +828,19 @@ class MainWindow(QMainWindow):
         
         return True
     
+    def skip_image(self):
+        """Skip current image and move to next without creating output files"""
+        if self.current_image_path is None:
+            QMessageBox.warning(self, "Warning", "No image loaded to skip")
+            return
+        
+        # Move to next image without saving
+        if self.current_image_idx < len(self.image_paths) - 1:
+            self.current_image_idx += 1
+            self.load_current_image()
+        else:
+            QMessageBox.information(self, "Info", "Reached last image. No files were created.")
+    
     def save_and_next_image(self):
         """Save image and label to output folders, then move to next image"""
         if self.current_image_path is None:
@@ -818,9 +855,8 @@ class MainWindow(QMainWindow):
             QApplication.instance().processEvents()
         
         try:
-            # Create output directories
-            os.makedirs(OUTPUT_IMG_DIR, exist_ok=True)
-            os.makedirs(OUTPUT_LABEL_DIR, exist_ok=True)
+            # Create output directories (with .gitkeep files)
+            ensure_output_directories()
             
             # Process events after directory creation
             if QApplication.instance() is not None:
