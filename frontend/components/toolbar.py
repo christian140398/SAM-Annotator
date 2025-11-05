@@ -62,9 +62,9 @@ def create_white_svg_icon(svg_path: str) -> QIcon:
 
 # Tool definitions with icons (SVG file paths or emoji fallback)
 TOOLS = [
-    {"id": "segment", "icon": os.path.join(_ICON_DIR, "line-segments-fill-svgrepo-com.svg"), "label": "Segment", "shortcut": "S"},
-    {"id": "brush", "icon": os.path.join(_ICON_DIR, "draw-svgrepo-com.svg"), "label": "Brush", "shortcut": "B"},
-    {"id": "pan", "icon": os.path.join(_ICON_DIR, "pan-cursor-svgrepo-com.svg"), "label": "Pan", "shortcut": "H"},
+    {"id": "segment", "icon": os.path.join(_ICON_DIR, "line-segments-fill-svgrepo-com.svg"), "label": "Segment", "shortcut": "A"},
+    {"id": "brush", "icon": os.path.join(_ICON_DIR, "draw-svgrepo-com.svg"), "label": "Brush", "shortcut": "S"},
+    {"id": "pan", "icon": os.path.join(_ICON_DIR, "pan-cursor-svgrepo-com.svg"), "label": "Pan", "shortcut": "Space"},
     {"id": "fit_bbox", "icon": os.path.join(_ICON_DIR, "resize-svgrepo-com.svg"), "label": "Fit to Bounding Box", "shortcut": "F"},
 ]
 

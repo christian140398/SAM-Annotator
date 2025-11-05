@@ -5,9 +5,9 @@ Image display/view area component with SAM segmentation support
 from typing import Optional, List, Tuple
 import numpy as np
 import cv2
-from PySide6.QtWidgets import QWidget, QLabel, QHBoxLayout, QVBoxLayout, QProgressBar
+from PySide6.QtWidgets import QWidget, QLabel, QHBoxLayout, QVBoxLayout, QProgressBar, QApplication
 from PySide6.QtCore import Qt, Signal, QPoint, QThread, QObject, QTimer
-from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QWheelEvent
+from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QWheelEvent, QKeyEvent
 from frontend.theme import CANVAS_BG, ITEM_BORDER, TEXT_COLOR, ITEM_BG
 from segmentation.sam_model import SAMModel
 
@@ -48,6 +48,8 @@ class ImageView(QWidget):
         self.setObjectName("ImageView")
         self.setMinimumHeight(400)
         self.setCursor(Qt.CrossCursor)
+        # Enable keyboard focus to receive space key events
+        self.setFocusPolicy(Qt.StrongFocus)
         
         # Image state
         self.base_image: Optional[np.ndarray] = None  # BGR format
@@ -63,6 +65,7 @@ class ImageView(QWidget):
         # Pan/zoom state
         self.is_panning = False
         self.last_pan_pos: Optional[QPoint] = None
+        self.space_pressed = False  # Track if space key is held down for temporary pan mode
         
         # SAM model
         self.sam_model: Optional[SAMModel] = None
@@ -969,13 +972,23 @@ class ImageView(QWidget):
     
     def mousePressEvent(self, event):
         """Handle mouse press events"""
-        if self.active_tool == "pan" and event.button() == Qt.LeftButton:
+        # Ensure widget has keyboard focus when clicked
+        if not self.hasFocus():
+            self.setFocus()
+        
+        # Check for space-pan mode first (temporary pan when space is held)
+        if self.space_pressed and event.button() == Qt.LeftButton:
+            # Start panning when space is held (temporary pan mode)
+            self.is_panning = True
+            self.last_pan_pos = event.pos()
+            self.setCursor(Qt.ClosedHandCursor)
+        elif self.active_tool == "pan" and event.button() == Qt.LeftButton:
             # Start panning (always allow panning)
             self.is_panning = True
             self.last_pan_pos = event.pos()
             self.setCursor(Qt.ClosedHandCursor)
-        elif self.active_tool == "brush" and event.button() == Qt.LeftButton:
-            # Left click: start drawing with brush (only if SAM is ready)
+        elif self.active_tool == "brush" and event.button() == Qt.LeftButton and not self.space_pressed:
+            # Left click: start drawing with brush (only if SAM is ready and space is not held)
             if self.sam_ready:
                 if self.current_mask is not None or self.current_label_id is not None:
                     # Ensure we have a mask to draw on
@@ -991,8 +1004,8 @@ class ImageView(QWidget):
                         if img_coords:
                             self.last_brush_pos = img_coords
                             self._apply_brush_stroke(img_coords, "draw")
-        elif self.active_tool == "brush" and event.button() == Qt.RightButton:
-            # Right click: start erasing with brush (only if SAM is ready)
+        elif self.active_tool == "brush" and event.button() == Qt.RightButton and not self.space_pressed:
+            # Right click: start erasing with brush (only if SAM is ready and space is not held)
             if self.sam_ready:
                 if self.current_mask is not None:
                     # Save history BEFORE starting brush stroke
@@ -1004,18 +1017,26 @@ class ImageView(QWidget):
                     if img_coords:
                         self.last_brush_pos = img_coords
                         self._apply_brush_stroke(img_coords, "erase")
-        elif event.button() == Qt.LeftButton and self.active_tool == "segment":
-            # Left click: positive point (only if SAM is ready)
+        elif event.button() == Qt.LeftButton and self.active_tool == "segment" and not self.space_pressed:
+            # Left click: positive point (only if SAM is ready and space is not held)
             if self.sam_ready:
                 self.add_point(event.x(), event.y(), True)
-        elif event.button() == Qt.RightButton and self.active_tool == "segment":
-            # Right click: negative point (only if SAM is ready)
+        elif event.button() == Qt.RightButton and self.active_tool == "segment" and not self.space_pressed:
+            # Right click: negative point (only if SAM is ready and space is not held)
             if self.sam_ready:
                 self.add_point(event.x(), event.y(), False)
         super().mousePressEvent(event)
     
     def mouseMoveEvent(self, event):
         """Handle mouse move events"""
+        # Check if space is pressed and we should start panning mid-drag
+        buttons = QApplication.instance().mouseButtons()
+        if self.space_pressed and (buttons & Qt.LeftButton) and not self.is_panning and not self.is_brushing:
+            # Space was pressed during a drag, switch to pan mode
+            self.is_panning = True
+            self.last_pan_pos = event.pos()
+            self.setCursor(Qt.ClosedHandCursor)
+        
         if self.is_panning and self.last_pan_pos is not None:
             # Calculate pan delta
             delta_x = event.pos().x() - self.last_pan_pos.x()
@@ -1030,8 +1051,8 @@ class ImageView(QWidget):
             
             # Redraw
             self.update()
-        elif self.is_brushing and self.active_tool == "brush":
-            # Continue brush stroke while moving
+        elif self.is_brushing and self.active_tool == "brush" and not self.space_pressed:
+            # Continue brush stroke while moving (only if space is not held)
             img_coords = self.widget_to_image_coords(event.x(), event.y())
             if img_coords:
                 # Draw line from last position to current position for smooth strokes
@@ -1040,16 +1061,26 @@ class ImageView(QWidget):
                 else:
                     self._apply_brush_stroke(img_coords, self.brush_mode)
                 self.last_brush_pos = img_coords
+        elif self.space_pressed and not self.is_panning:
+            # If space is pressed but we're not panning yet, stop any ongoing brush strokes
+            if self.is_brushing:
+                self.is_brushing = False
+                self.last_brush_pos = None
         super().mouseMoveEvent(event)
     
     def mouseReleaseEvent(self, event):
         """Handle mouse release events"""
         if self.is_panning and event.button() == Qt.LeftButton:
-            # Stop panning
+            # Stop panning only if mouse button is released
+            # Check if space is still pressed - if so, keep ready for next click
             self.is_panning = False
             self.last_pan_pos = None
-            self.update_cursor()
-        elif self.is_brushing and (event.button() == Qt.LeftButton or event.button() == Qt.RightButton):
+            # If space is still pressed, keep pan cursor ready for next click
+            if self.space_pressed:
+                self.setCursor(Qt.OpenHandCursor)
+            else:
+                self.update_cursor()
+        elif self.is_brushing and (event.button() == Qt.LeftButton or event.button() == Qt.RightButton) and not self.space_pressed:
             # Stop brushing
             self.is_brushing = False
             self.last_brush_pos = None
@@ -1093,6 +1124,49 @@ class ImageView(QWidget):
                 self.zoom_in_at_position(widget_x, widget_y, 1.0 / zoom_factor)
         
         event.accept()
+    
+    def keyPressEvent(self, event: QKeyEvent):
+        """Handle key press events"""
+        if event.key() == Qt.Key_Space and not event.isAutoRepeat():
+            # Only process initial key press, not auto-repeat
+            self.space_pressed = True
+            # Cancel any ongoing brush strokes when space is pressed
+            if self.is_brushing:
+                self.is_brushing = False
+                self.last_brush_pos = None
+            
+            # If space is pressed and mouse button might be down, check if we should start panning
+            # Check if left mouse button is currently pressed
+            buttons = QApplication.instance().mouseButtons()
+            if buttons & Qt.LeftButton and not self.is_panning:
+                # Mouse is already down, start panning now
+                cursor_pos = self.mapFromGlobal(QApplication.instance().cursor().pos())
+                self.is_panning = True
+                self.last_pan_pos = cursor_pos
+                self.setCursor(Qt.ClosedHandCursor)
+            elif not self.is_panning:
+                # Mouse not down, just show open hand cursor
+                self.setCursor(Qt.OpenHandCursor)
+        super().keyPressEvent(event)
+    
+    def keyReleaseEvent(self, event: QKeyEvent):
+        """Handle key release events"""
+        if event.key() == Qt.Key_Space and not event.isAutoRepeat():
+            # Only process actual key release, not auto-repeat release
+            self.space_pressed = False
+            # Only stop panning if mouse button is also released
+            # Check if left mouse button is still pressed
+            buttons = QApplication.instance().mouseButtons()
+            if not (buttons & Qt.LeftButton):
+                # Mouse is released, stop panning
+                if self.is_panning:
+                    self.is_panning = False
+                    self.last_pan_pos = None
+                # Restore cursor to active tool cursor
+                self.update_cursor()
+            # If mouse is still down when space is released, panning continues until mouse is released
+            # This is handled in mouseReleaseEvent
+        super().keyReleaseEvent(event)
     
     def zoom_in_at_position(self, widget_x: float, widget_y: float, zoom_factor: float):
         """

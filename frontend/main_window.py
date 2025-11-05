@@ -9,7 +9,8 @@ import xml.etree.ElementTree as ET
 import hashlib
 from typing import Optional, List, Dict, Tuple
 from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFrame, QMessageBox, QApplication
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtGui import QKeySequence, QShortcut, QKeyEvent
+from PySide6.QtCore import Qt, QEvent
 import cv2
 import numpy as np
 from pycocotools import mask as mask_utils
@@ -243,6 +244,9 @@ class MainWindow(QMainWindow):
         # Setup keyboard shortcuts
         self.setup_shortcuts()
         
+        # Install event filter on application to capture space key events globally
+        QApplication.instance().installEventFilter(self)
+        
         # Show window in fullscreen mode
         self.showFullScreen()
         
@@ -389,32 +393,32 @@ class MainWindow(QMainWindow):
             shortcut.activated.connect(lambda lid=label["id"]: self.select_label(lid))
             self.label_shortcuts.append(shortcut)
         
-        # N - Next segment (finalize current)
-        shortcut_n = QShortcut(QKeySequence("N"), self)
-        shortcut_n.activated.connect(self.finalize_segment)
+        # E - Finalize segment
+        shortcut_e = QShortcut(QKeySequence("E"), self)
+        shortcut_e.activated.connect(self.finalize_segment)
         
-        # U - Undo
-        shortcut_u = QShortcut(QKeySequence("U"), self)
-        shortcut_u.activated.connect(self.undo_action)
+        # Z - Undo
+        shortcut_z = QShortcut(QKeySequence("Z"), self)
+        shortcut_z.activated.connect(self.undo_action)
         
-        # H - Pan tool
-        shortcut_h = QShortcut(QKeySequence("H"), self)
-        shortcut_h.activated.connect(lambda: self.select_tool("pan"))
+        # A - Segment tool
+        shortcut_a_tool = QShortcut(QKeySequence("A"), self)
+        shortcut_a_tool.activated.connect(lambda: self.select_tool("segment"))
         
-        # S - Segment tool
+        # S - Brush tool
         shortcut_s_tool = QShortcut(QKeySequence("S"), self)
-        shortcut_s_tool.activated.connect(lambda: self.select_tool("segment"))
+        shortcut_s_tool.activated.connect(lambda: self.select_tool("brush"))
         
-        # B - Brush tool
-        shortcut_b_tool = QShortcut(QKeySequence("B"), self)
-        shortcut_b_tool.activated.connect(lambda: self.select_tool("brush"))
+        # F - Fit to bounding box
+        shortcut_f = QShortcut(QKeySequence("F"), self)
+        shortcut_f.activated.connect(lambda: self.select_tool("fit_bbox"))
         
-        # Ctrl+S - Save and next image (changed from S to avoid conflict)
+        # Ctrl+S - Save and next image
         shortcut_save = QShortcut(QKeySequence("Ctrl+S"), self)
         shortcut_save.activated.connect(self.save_and_next_image)
         
-        # M - Skip image (move to next without saving)
-        shortcut_skip = QShortcut(QKeySequence("M"), self)
+        # N - Skip image (move to next without saving)
+        shortcut_skip = QShortcut(QKeySequence("N"), self)
         shortcut_skip.activated.connect(self.skip_image)
         
         # Q - Quit
@@ -423,9 +427,13 @@ class MainWindow(QMainWindow):
     
     def select_tool(self, tool_id: str):
         """Select a tool by ID (can be called from keyboard shortcuts)"""
-        # Set active tool in toolbar (this will emit signal and update image view)
-        self.toolbar.set_active_tool(tool_id)
-        if tool_id != "fit_bbox":
+        # fit_bbox is an action, not a tool - it doesn't change active tool state
+        if tool_id == "fit_bbox":
+            # Just emit the signal without changing active tool
+            self.toolbar.tool_changed.emit(tool_id)
+        else:
+            # Set active tool in toolbar (this will emit signal and update image view)
+            self.toolbar.set_active_tool(tool_id)
             self.toolbar.tool_changed.emit(tool_id)
     
     def on_tool_changed(self, tool_id: str):
@@ -892,3 +900,23 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "Info", "Reached last image. Files saved successfully.")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save files: {str(e)}")
+    
+    def eventFilter(self, obj, event):
+        """Event filter to capture space key events globally"""
+        # Only process key events for space key
+        if isinstance(event, QKeyEvent) and event.key() == Qt.Key_Space:
+            # Forward space key events to image view regardless of focus
+            # Skip auto-repeat events to avoid interference
+            if hasattr(self, 'image_view') and self.image_view:
+                if event.type() == QEvent.Type.KeyPress and not event.isAutoRepeat():
+                    # Forward the key press event to image view
+                    if hasattr(self.image_view, 'keyPressEvent'):
+                        self.image_view.keyPressEvent(event)
+                        # Don't consume the event, let it propagate if needed
+                elif event.type() == QEvent.Type.KeyRelease and not event.isAutoRepeat():
+                    # Forward key release event to image view
+                    if hasattr(self.image_view, 'keyReleaseEvent'):
+                        self.image_view.keyReleaseEvent(event)
+        
+        # Let all events pass through normally (don't consume them)
+        return False
