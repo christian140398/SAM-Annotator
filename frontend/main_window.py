@@ -246,12 +246,10 @@ class MainWindow(QMainWindow):
         """Initialize labels from label.txt file"""
         label_names, label_colors = load_labels_with_colors(LABEL_FILE)
         
-        # If no labels found in file, use defaults
+        # If no labels found in file, don't use defaults - show error message instead
         if not label_names:
-            print("No labels found in label.txt, using defaults")
-            label_names = ["body", "rotor", "camera", "other"]
-            for name in label_names:
-                label_colors[name] = generate_random_color_hex(name)
+            print("No labels found in label.txt")
+            return
         
         for i, name in enumerate(label_names):
             label_id = str(i + 1)
