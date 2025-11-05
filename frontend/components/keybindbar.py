@@ -83,6 +83,7 @@ class KeybindsBar(QWidget):
         {"key": "Z", "label": "Undo"},
         {"key": "q", "label": "Quit"},
         {"key": "Ctrl+S", "label": "Save & next image"},
+        {"key": "M", "label": "Skip image"},
         {"key": "Scroll", "label": "Zoom"},
     ]
     
@@ -140,6 +141,21 @@ class KeybindsBar(QWidget):
             item = self.labels_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
+        
+        # If no labels, show error message
+        if not self.labels:
+            error_label = QLabel("No labels found. Create label.txt in project root with one label per line")
+            error_label.setAlignment(Qt.AlignCenter)
+            error_label.setStyleSheet(f"""
+                color: #ef4444;
+                font-size: 11px;
+                background-color: transparent;
+                padding: 4px 8px;
+            """)
+            self.labels_layout.addWidget(error_label)
+            self.labels_layout.addStretch()
+            self.adjust_height()
+            return
         
         # Add labels with their keybind numbers (all labels)
         for i, label in enumerate(self.labels):
