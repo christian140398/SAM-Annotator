@@ -79,6 +79,7 @@ class KeybindsBar(QWidget):
         {"key": "S", "label": "Segment tool"},
         {"key": "B", "label": "Brush tool"},
         {"key": "Ctrl+S", "label": "Save & next image"},
+        {"key": "M", "label": "Skip image"},
         {"key": "Scroll", "label": "Zoom"},
         {"key": "N", "label": "Finalize segment"},
         {"key": "U", "label": "Undo"},
