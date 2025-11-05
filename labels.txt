@@ -1,0 +1,4 @@
+rotor
+frame
+camera
+other

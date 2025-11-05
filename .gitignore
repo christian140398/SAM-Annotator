@@ -1,11 +1,49 @@
-# Model files
-models/sam_vit_b_01ec64.pth
+# Model files - ignore all files but keep folder structure
+models/*
+!models/.gitkeep
+models/*.pth
+models/*.pt
+models/*.onnx
+models/*.h5
+models/*.pkl
 
-# Input folder contents
-input/**
+# Input folder contents - ignore all files but keep folder structure
+input/images/*
+!input/images/.gitkeep
+input/labels/*
+!input/labels/.gitkeep
+# Ignore common image formats
+input/**/*.jpg
+input/**/*.jpeg
+input/**/*.png
+input/**/*.gif
+input/**/*.bmp
+input/**/*.tiff
+input/**/*.webp
+# Ignore label files
+input/**/*.json
+input/**/*.txt
+input/**/*.xml
+input/**/*.csv
 
-# Output folder contents
-output/**
+# Output folder contents - ignore all files but keep folder structure
+output/images/*
+!output/images/.gitkeep
+output/labels/*
+!output/labels/.gitkeep
+# Ignore common image formats
+output/**/*.jpg
+output/**/*.jpeg
+output/**/*.png
+output/**/*.gif
+output/**/*.bmp
+output/**/*.tiff
+output/**/*.webp
+# Ignore label files
+output/**/*.json
+output/**/*.txt
+output/**/*.xml
+output/**/*.csv
 
 # Label file
 label.txt
