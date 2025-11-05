@@ -54,8 +54,9 @@ python main.py
 
 4. Use the interface to:
    - Navigate through images
-   - **Segment Tool (S)**: Click to add positive (include) points (green), right-click to add negative (exclude) points (red)
-   - **Brush Tool (B)**: Left-click and drag to draw/add to segment, right-click and drag to erase/remove from segment
+   - **Segment Tool (A)**: Click to add positive (include) points (green), right-click to add negative (exclude) points (red)
+   - **Brush Tool (S)**: Left-click and drag to draw/add to segment, right-click and drag to erase/remove from segment
+   - **Highlight Current Segment (H)**: Hold H to show a white outline around the current segment being created
    - Assign categories to segments
    - Save annotations
 
@@ -100,28 +101,32 @@ python test/segmentation_test.py 00004
 ## Keyboard Shortcuts
 
 ### Tools
-- **H**: Pan tool (drag to move image)
-- **S**: Segment tool (click to add points for segmentation)
-- **B**: Brush tool (draw and erase segments directly)
+- **A**: Segment tool (click to add points for segmentation)
+- **S**: Brush tool (draw and erase segments directly)
+- **Space**: Pan tool (hold and drag to move image)
 - **F**: Fit to bounding box (zoom and center view on bounding box)
 
 ### Segmentation
-#### Segment Tool (S)
+#### Segment Tool (A)
 - **Left Click**: Add positive point (include area) - green marker
 - **Right Click**: Add negative point (exclude area) - red marker
 
-#### Brush Tool (B)
+#### Brush Tool (S)
 - **Left Click + Drag**: Draw/add to segment
 - **Right Click + Drag**: Erase/remove from segment
 
 #### General
-- **N**: Finalize current segment
-- **U**: Undo last action (brush stroke, point addition, or segment deletion)
+- **E**: Finalize current segment
+- **H**: Highlight current segment (hold to show white outline around segment being created)
+  - Only works when actively creating a segment (before finalizing)
+  - Helps visualize the segment boundary for quality control
+- **Z**: Undo last action (brush stroke, point addition, or segment deletion)
   - When undoing a finalized segment, a confirmation dialog will appear
 
 ### Navigation & Actions
 - **Scroll**: Zoom in/out (scroll wheel)
 - **Ctrl+S**: Save & next image
+- **N**: Skip image (move to next image without saving)
 - **Q**: Quit application
 
 ### Label Selection
