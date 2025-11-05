@@ -417,12 +417,12 @@ class MainWindow(QMainWindow):
         shortcut_save = QShortcut(QKeySequence("Ctrl+S"), self)
         shortcut_save.activated.connect(self.save_and_next_image)
         
-        # M - Skip image (move to next without saving)
-        shortcut_skip = QShortcut(QKeySequence("M"), self)
+        # N - Skip image (move to next without saving)
+        shortcut_skip = QShortcut(QKeySequence("N"), self)
         shortcut_skip.activated.connect(self.skip_image)
         
-        # q - Quit (lowercase)
-        shortcut_q = QShortcut(QKeySequence("q"), self)
+        # Q - Quit
+        shortcut_q = QShortcut(QKeySequence("Q"), self)
         shortcut_q.activated.connect(self.close)
     
     def select_tool(self, tool_id: str):

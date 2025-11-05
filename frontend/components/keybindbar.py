@@ -81,10 +81,10 @@ class KeybindsBar(QWidget):
         {"key": "F", "label": "Fit to bounding box"},
         {"key": "E", "label": "Finalize segment"},
         {"key": "Z", "label": "Undo"},
-        {"key": "q", "label": "Quit"},
         {"key": "Ctrl+S", "label": "Save & next image"},
-        {"key": "M", "label": "Skip image"},
+        {"key": "N", "label": "Skip image"},
         {"key": "Scroll", "label": "Zoom"},
+        {"key": "Q", "label": "Quit"},
     ]
     
     def __init__(self, parent=None, keybinds: List[Dict[str, str]] = None):
