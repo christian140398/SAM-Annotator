@@ -80,6 +80,7 @@ class KeybindsBar(QWidget):
         {"key": "Space", "label": "Pan tool"},
         {"key": "F", "label": "Fit to bounding box"},
         {"key": "E", "label": "Finalize segment"},
+        {"key": "H", "label": "Highlight current segment"},
         {"key": "Z", "label": "Undo"},
         {"key": "Ctrl+S", "label": "Save & next image"},
         {"key": "N", "label": "Skip image"},

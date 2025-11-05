@@ -10,7 +10,7 @@ import hashlib
 from typing import Optional, List, Dict, Tuple
 from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFrame, QMessageBox, QApplication
 from PySide6.QtGui import QKeySequence, QShortcut, QKeyEvent
-from PySide6.QtCore import Qt, QEvent
+from PySide6.QtCore import Qt, QEvent, QThread, QObject, Signal, QTimer
 import cv2
 import numpy as np
 from pycocotools import mask as mask_utils
@@ -108,6 +108,29 @@ def load_labels_with_colors(label_file: str) -> Tuple[List[str], Dict[str, str]]
     return labels, colors
 
 
+class PreloadEmbeddingWorker(QObject):
+    """Worker object for preloading next image embedding in background"""
+    finished = Signal()
+    embedding_complete = Signal()
+    
+    def __init__(self, preload_sam_model: SAMModel, image: np.ndarray):
+        super().__init__()
+        self.preload_sam_model = preload_sam_model  # Use separate preload model
+        self.image = image.copy()  # Copy to avoid issues with thread safety
+    
+    def process(self):
+        """Process the image with SAM model for preloading"""
+        try:
+            if self.preload_sam_model:
+                self.preload_sam_model.set_image(self.image)
+                print(f"Preload embedding completed for next image")
+                self.embedding_complete.emit()
+        except Exception as e:
+            print(f"Error preloading SAM image: {str(e)}")
+        finally:
+            self.finished.emit()
+
+
 def ensure_output_directories():
     """
     Create output directories if they don't exist and add .gitkeep files.
@@ -143,6 +166,7 @@ class MainWindow(QMainWindow):
         
         # Application state
         self.sam_model: Optional[SAMModel] = None
+        self.preload_sam_model: Optional[SAMModel] = None  # Separate SAM model for preloading
         self.labels: List[Dict] = []
         self.current_label_id: Optional[str] = None
         self.image_paths: List[str] = []
@@ -150,6 +174,13 @@ class MainWindow(QMainWindow):
         self.current_image_path: Optional[str] = None
         self.current_xml_path: Optional[str] = None
         self.label_shortcuts: List[QShortcut] = []  # Store label shortcuts
+        
+        # Preloading state
+        self.preloaded_image: Optional[np.ndarray] = None  # Preloaded next image data
+        self.preloaded_image_idx: Optional[int] = None  # Index of preloaded image
+        self.preload_thread: Optional[QThread] = None  # Thread for preloading embedding
+        self.preload_worker: Optional[QObject] = None  # Worker for preloading
+        self.preload_ready = False  # Flag to track if preload embedding is complete
         
         # Initialize SAM model
         self.init_sam_model()
@@ -261,6 +292,9 @@ class MainWindow(QMainWindow):
         try:
             if os.path.isfile(CHECKPOINT):
                 self.sam_model = SAMModel(CHECKPOINT, SAM_MODEL_TYPE)
+                # Create a separate SAM model instance for preloading
+                # This allows us to pre-embed the next image without affecting the current image
+                self.preload_sam_model = SAMModel(CHECKPOINT, SAM_MODEL_TYPE)
             else:
                 QMessageBox.warning(self, "Warning", f"SAM checkpoint not found: {CHECKPOINT}")
         except Exception as e:
@@ -334,7 +368,99 @@ class MainWindow(QMainWindow):
                 print(f"Found label file: {xml_path}")
         
         try:
-            self.image_view.load_image(img_path, xml_path)
+            # Check if we have a preloaded embedding ready for this image
+            # The embedding might have been started right before navigation
+            use_preloaded = (self.preloaded_image_idx == self.current_image_idx and 
+                            self.preloaded_image is not None and 
+                            self.preload_ready)
+            
+            if use_preloaded:
+                print(f"Using preloaded embedding for image {self.current_image_idx + 1} - skipping embedding step")
+            else:
+                # If embedding is in progress, wait for it (but with timeout)
+                if (self.preloaded_image_idx == self.current_image_idx and 
+                    self.preloaded_image is not None and 
+                    self.preload_thread is not None and
+                    self.preload_thread.isRunning()):
+                    print(f"Waiting for preload embedding to complete for image {self.current_image_idx + 1}...")
+                    # Wait up to 5 seconds for embedding to complete (embedding can take time)
+                    if self.preload_thread.wait(5000):
+                        # Embedding completed, use it
+                        if self.preload_ready:
+                            use_preloaded = True
+                            print(f"Preload embedding completed, using it for image {self.current_image_idx + 1}")
+                    else:
+                        print(f"Preload embedding timed out, will embed normally")
+                        # Cancel the preload thread since it timed out
+                        self.cancel_preload()
+            
+            # If using preloaded embedding, swap the SAM models to use the preloaded one
+            # This avoids recomputing the embedding - we just swap which model ImageView uses
+            if use_preloaded and self.preload_sam_model is not None and self.preloaded_image is not None:
+                print(f"Swapping to preloaded SAM model (embedding already computed)...")
+                
+                # Verify the preload model has the correct image by checking dimensions
+                preload_img = self.preload_sam_model.get_current_image()
+                if preload_img is not None:
+                    preload_h, preload_w = preload_img.shape[:2]
+                    preloaded_h, preloaded_w = self.preloaded_image.shape[:2]
+                    if preload_h == preloaded_h and preload_w == preloaded_w:
+                        # Dimensions match - safe to swap
+                        # Swap the models: preload_sam_model (has embedding) becomes main, main becomes preload
+                        temp_model = self.sam_model
+                        self.sam_model = self.preload_sam_model
+                        self.preload_sam_model = temp_model
+                        # Update ImageView to use the swapped model
+                        self.image_view.set_sam_model(self.sam_model)
+                        print(f"Swapped to preloaded SAM model - no embedding computation needed!")
+                    else:
+                        print(f"Warning: Preload model has wrong image dimensions ({preload_h}x{preload_w} vs {preloaded_h}x{preloaded_w}), will recompute")
+                        # Don't swap - just embed normally
+                        use_preloaded = False
+                else:
+                    print(f"Warning: Preload model has no image, will recompute")
+                    use_preloaded = False
+            
+            # Clear preload state BEFORE loading image (if it was for this image)
+            # This prevents on_sam_embedding_complete from trying to preload the current image
+            preload_was_for_current = (self.preloaded_image_idx == self.current_image_idx)
+            if preload_was_for_current:
+                # Clear the preload state before emitting sam_embedding_complete
+                self.preloaded_image = None
+                self.preloaded_image_idx = None
+                self.preload_ready = False
+                # Cancel thread without waiting (let it finish in background)
+                if self.preload_thread is not None:
+                    try:
+                        if self.preload_thread.isRunning():
+                            self.preload_thread.quit()
+                    except RuntimeError:
+                        pass
+            
+            # Preload next image data BEFORE loading current image
+            # This ensures that when sam_embedding_complete signal is emitted,
+            # the next image is already ready to be embedded
+            self.preload_next_image()
+            
+            # Load image, skipping embedding if preloaded and ready
+            self.image_view.load_image(img_path, xml_path, skip_embedding=use_preloaded)
+            
+            # After loading, verify the SAM model has the correct image embedded
+            # This is especially important after swapping models
+            if use_preloaded and self.sam_model is not None:
+                model_img = self.sam_model.get_current_image()
+                if model_img is not None:
+                    model_h, model_w = model_img.shape[:2]
+                    # Get the actual image dimensions from the loaded image
+                    actual_img = cv2.imread(img_path)
+                    if actual_img is not None:
+                        actual_h, actual_w = actual_img.shape[:2]
+                        if model_h != actual_h or model_w != actual_w:
+                            print(f"Error: Model has wrong image after swap ({model_h}x{model_w} vs {actual_h}x{actual_w}), forcing re-embedding")
+                            # Force re-embedding by calling load_image again without skip_embedding
+                            self.image_view.load_image(img_path, xml_path, skip_embedding=False)
+                            use_preloaded = False  # Mark as not using preloaded to avoid issues
+            
             print(f"Successfully loaded image: {os.path.basename(img_path)}")
             
             # Store current paths for saving
@@ -367,6 +493,7 @@ class MainWindow(QMainWindow):
         # ImageView -> SegmentsPanel
         self.image_view.segment_finalized.connect(self.on_segment_finalized)
         self.image_view.mask_updated.connect(self.on_mask_updated)
+        self.image_view.sam_embedding_complete.connect(self.on_sam_embedding_complete)
         
         # SegmentsPanel -> ImageView
         self.segments_panel.segment_selected.connect(self.on_segment_selected)
@@ -508,6 +635,105 @@ class MainWindow(QMainWindow):
     def on_mask_updated(self, _mask):
         """Handle mask update signal"""
         # Could update UI if needed
+    
+    def on_sam_embedding_complete(self):
+        """Handle SAM embedding complete signal - start preloading next image embedding"""
+        # Start embedding the preloaded next image if available
+        # We use a separate SAM model (preload_sam_model) so it doesn't interfere with current image
+        # This allows background embedding without breaking tools
+        # Only start if we have a preloaded image that is NOT the current image
+        if (self.preloaded_image is not None and 
+            self.preloaded_image_idx is not None and 
+            self.preloaded_image_idx != self.current_image_idx):
+            # Start immediately - no delay needed since we use separate SAM model
+            self.start_preload_embedding()
+    
+    def preload_next_image(self):
+        """Preload the next image data into memory"""
+        # Cancel any existing preload
+        self.cancel_preload()
+        
+        # Check if there's a next image
+        next_idx = self.current_image_idx + 1
+        if next_idx >= len(self.image_paths):
+            # No next image to preload - clear any stale preload state
+            self.preloaded_image = None
+            self.preloaded_image_idx = None
+            self.preload_ready = False
+            return
+        
+        # Load next image into memory
+        next_img_path = self.image_paths[next_idx]
+        try:
+            img = cv2.imread(next_img_path)
+            if img is not None:
+                self.preloaded_image = img
+                self.preloaded_image_idx = next_idx
+                self.preload_ready = False
+                print(f"Preloaded image data: {os.path.basename(next_img_path)}")
+            else:
+                print(f"Failed to preload image: {next_img_path}")
+        except Exception as e:
+            print(f"Error preloading image: {str(e)}")
+    
+    def start_preload_embedding(self):
+        """Start embedding the preloaded next image in background thread"""
+        if self.preloaded_image is None or self.preload_sam_model is None:
+            return
+        
+        # Cancel any existing preload thread (without waiting to avoid blocking)
+        if self.preload_thread is not None:
+            try:
+                if self.preload_thread.isRunning():
+                    self.preload_thread.quit()
+                    # Don't wait - let it finish in background
+            except RuntimeError:
+                pass
+        
+        # Create new thread and worker for preloading
+        # Use separate preload_sam_model so it doesn't interfere with current image
+        self.preload_thread = QThread()
+        self.preload_worker = PreloadEmbeddingWorker(self.preload_sam_model, self.preloaded_image)
+        self.preload_worker.moveToThread(self.preload_thread)
+        
+        # Connect signals - but don't connect to any ImageView signals that might trigger UI updates
+        self.preload_thread.started.connect(self.preload_worker.process)
+        self.preload_worker.embedding_complete.connect(self._on_preload_embedding_complete)
+        self.preload_worker.finished.connect(self.preload_thread.quit)
+        self.preload_worker.finished.connect(self.preload_worker.deleteLater)
+        self.preload_thread.finished.connect(self._cleanup_preload_thread)
+        
+        # Start preloading in background (silently, no UI updates)
+        self.preload_thread.start()
+        print(f"Started preloading embedding for image {self.preloaded_image_idx + 1} (silent, using separate SAM model)")
+    
+    def _on_preload_embedding_complete(self):
+        """Called when preload embedding is complete"""
+        self.preload_ready = True
+        if self.preloaded_image_idx is not None:
+            print(f"Preload embedding ready for image {self.preloaded_image_idx + 1}")
+        else:
+            print("Preload embedding ready")
+    
+    def _cleanup_preload_thread(self):
+        """Clean up preload thread resources"""
+        try:
+            if self.preload_thread is not None:
+                self.preload_thread.deleteLater()
+                self.preload_thread = None
+        except RuntimeError:
+            pass
+    
+    def cancel_preload(self):
+        """Cancel any ongoing preload operations"""
+        if self.preload_thread is not None:
+            try:
+                if self.preload_thread.isRunning():
+                    self.preload_thread.quit()
+                    # Don't wait - let it finish in background to avoid blocking
+            except RuntimeError:
+                pass
+            # Cleanup will happen when thread finishes via _cleanup_preload_thread
     
     def on_segment_selected(self, segment_id: str):
         """Handle segment selection from panel"""
@@ -844,6 +1070,18 @@ class MainWindow(QMainWindow):
         
         # Move to next image without saving
         if self.current_image_idx < len(self.image_paths) - 1:
+            next_idx = self.current_image_idx + 1
+            
+            # Only cancel preload if it's for a different image
+            # If it's for the image we're about to load, keep it running and wait for it
+            if (self.preloaded_image_idx is not None and 
+                self.preloaded_image_idx != next_idx):
+                # Cancel preload for wrong image
+                self.cancel_preload()
+                # Process events to ensure thread cleanup completes
+                if QApplication.instance() is not None:
+                    QApplication.instance().processEvents()
+            
             self.current_image_idx += 1
             self.load_current_image()
         else:
@@ -894,6 +1132,18 @@ class MainWindow(QMainWindow):
             
             # Move to next image
             if self.current_image_idx < len(self.image_paths) - 1:
+                next_idx = self.current_image_idx + 1
+                
+                # Only cancel preload if it's for a different image
+                # If it's for the image we're about to load, keep it running and wait for it
+                if (self.preloaded_image_idx is not None and 
+                    self.preloaded_image_idx != next_idx):
+                    # Cancel preload for wrong image
+                    self.cancel_preload()
+                    # Process events to ensure thread cleanup completes
+                    if QApplication.instance() is not None:
+                        QApplication.instance().processEvents()
+                
                 self.current_image_idx += 1
                 self.load_current_image()
             else:
@@ -902,10 +1152,10 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error", f"Failed to save files: {str(e)}")
     
     def eventFilter(self, obj, event):
-        """Event filter to capture space key events globally"""
-        # Only process key events for space key
-        if isinstance(event, QKeyEvent) and event.key() == Qt.Key_Space:
-            # Forward space key events to image view regardless of focus
+        """Event filter to capture space key and H key events globally"""
+        # Process key events for space key and H key
+        if isinstance(event, QKeyEvent) and (event.key() == Qt.Key_Space or event.key() == Qt.Key_H):
+            # Forward space key and H key events to image view regardless of focus
             # Skip auto-repeat events to avoid interference
             if hasattr(self, 'image_view') and self.image_view:
                 if event.type() == QEvent.Type.KeyPress and not event.isAutoRepeat():
