@@ -42,6 +42,7 @@ class ImageView(QWidget):
     mask_updated = Signal(object)  # Emits when current mask is updated
     segment_finalized = Signal(object, str)  # Emits (mask, label_id) when segment is finalized
     point_added = Signal()  # Emits when a point is added
+    sam_embedding_complete = Signal()  # Emits when SAM embedding is complete
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -248,8 +249,17 @@ class ImageView(QWidget):
         if self.loading_indicator is None:
             return
         
-        if not self.sam_ready and self.base_image is not None:
-            # Show loading indicator
+        # Only show loading indicator if:
+        # 1. SAM is not ready
+        # 2. Base image is loaded
+        # 3. We have an active SAM thread (meaning we're actively embedding the CURRENT image)
+        # This prevents showing the indicator during preloading of the next image
+        is_actively_embedding = (self.sam_thread is not None and 
+                                self.sam_thread.isRunning() and
+                                self.sam_worker is not None)
+        
+        if not self.sam_ready and self.base_image is not None and is_actively_embedding:
+            # Show loading indicator (only for current image embedding)
             self.loading_indicator.show()
             # Center it in the widget
             indicator_width = 240
@@ -320,13 +330,14 @@ class ImageView(QWidget):
         self.label_info = {label['id']: label for label in labels}
         self.update_label_indicator()
     
-    def load_image(self, image_path: str, xml_path: Optional[str] = None):
+    def load_image(self, image_path: str, xml_path: Optional[str] = None, skip_embedding: bool = False):
         """
         Load and display an image
         
         Args:
             image_path: Path to image file
             xml_path: Optional path to VOC XML file for bounding box
+            skip_embedding: If True, skip SAM embedding (embedding already done)
         """
         # Load image
         img = cv2.imread(image_path)
@@ -348,7 +359,6 @@ class ImageView(QWidget):
         self.finalized_masks = []
         self.finalized_labels = []
         self.hovered_segment_index = None
-        self.sam_ready = False  # Reset SAM ready flag
         self.mask_history = []  # Clear undo history
         self.points_history = []  # Clear points history
         
@@ -369,8 +379,17 @@ class ImageView(QWidget):
         # Show loading indicator
         self.update_loading_indicator()
         
-        # Process SAM in background thread (non-blocking)
-        if self.sam_model:
+        # Process SAM in background thread (non-blocking) or skip if already embedded
+        if skip_embedding:
+            # Embedding already done, just mark as ready
+            self.sam_ready = True
+            self.update_loading_indicator()
+            self.update_cursor()
+            print("Skipped embedding - using preloaded embedding")
+            # Emit signal so MainWindow can start preloading next image
+            self.sam_embedding_complete.emit()
+        elif self.sam_model:
+            self.sam_ready = False  # Reset SAM ready flag
             self._process_sam_image_async(img)
         else:
             # No SAM model, but still show as ready
@@ -413,6 +432,8 @@ class ImageView(QWidget):
         self.update_loading_indicator()
         # Update cursor now that SAM is ready
         self.update_cursor()
+        # Emit signal to notify that embedding is complete
+        self.sam_embedding_complete.emit()
     
     def _cleanup_thread(self):
         """Clean up thread resources"""
