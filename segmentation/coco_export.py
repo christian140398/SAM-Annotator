@@ -35,12 +35,10 @@ class COCOExporter:
             file_path: Path to image file
             width: Image width
             height: Image height
-            output_dir: Output directory (for relative paths)
+            output_dir: Output directory (for relative paths, ignored - uses basename)
         """
-        if output_dir:
-            file_name = os.path.relpath(file_path, start=output_dir).replace("\\", "/")
-        else:
-            file_name = os.path.basename(file_path)
+        # Use just the filename for cleaner COCO format
+        file_name = os.path.basename(file_path)
         
         self.images_json.append({
             "id": image_id,
