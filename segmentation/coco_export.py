@@ -47,7 +47,7 @@ class COCOExporter:
             "height": height
         })
     
-    def add_annotation(self, image_id: int, mask: np.ndarray, category_name: str):
+    def add_annotation(self, image_id: int, mask: np.ndarray, category_name: str, iscrowd: int = 0):
         """
         Add annotation
         
@@ -55,6 +55,7 @@ class COCOExporter:
             image_id: Image ID this annotation belongs to
             mask: Boolean mask array
             category_name: Category name (must be in categories list)
+            iscrowd: 0 for individual object, 1 for crowd/group (default: 0)
         """
         if category_name not in self.categories:
             raise ValueError(f"Category '{category_name}' not in categories list")
@@ -75,9 +76,40 @@ class COCOExporter:
             "segmentation": rle,
             "area": float(mask.sum()),
             "bbox": bbox,
-            "iscrowd": 0
+            "iscrowd": iscrowd
         })
         self.ann_id += 1
+    
+    def add_bbox_annotation(self, image_id: int, bbox: tuple, category_name: str, image_shape: tuple):
+        """
+        Add annotation from bounding box (converts to rectangular mask)
+        
+        Args:
+            image_id: Image ID this annotation belongs to
+            bbox: Tuple (xmin, ymin, xmax, ymax)
+            category_name: Category name (must be in categories list)
+            image_shape: Tuple (height, width) of the image
+        """
+        if category_name not in self.categories:
+            # Skip if category not in list
+            return
+        
+        xmin, ymin, xmax, ymax = bbox
+        H, W = image_shape
+        
+        # Clamp bounding box to image dimensions
+        xmin = max(0, min(W - 1, xmin))
+        ymin = max(0, min(H - 1, ymin))
+        xmax = max(0, min(W - 1, xmax))
+        ymax = max(0, min(H - 1, ymax))
+        
+        # Create rectangular mask from bounding box
+        mask = np.zeros((H, W), dtype=bool)
+        mask[ymin:ymax+1, xmin:xmax+1] = True
+        
+        # Use the regular add_annotation method with iscrowd=1 to indicate
+        # this is a bounding-box-derived annotation (less precise than actual segmentation)
+        self.add_annotation(image_id, mask, category_name, iscrowd=1)
     
     def export(self, output_path: str):
         """

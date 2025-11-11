@@ -337,6 +337,10 @@ class SegmentsPanel(QWidget):
                 }}
             """)
             
+            # Get original name
+            original_name = inp_obj.get('name', '')
+            current_label = self.input_object_label_map.get(idx)
+            
             # Add bb_labels to combo box
             if self.bb_labels:
                 combo.addItems(self.bb_labels)
@@ -344,27 +348,32 @@ class SegmentsPanel(QWidget):
                 combo.addItem("No labels available")
                 combo.setEnabled(False)
             
-            # Set current selection (use mapped label or original name if available in bb_labels)
-            current_label = self.input_object_label_map.get(idx)
-            if current_label:
-                index = combo.findText(current_label)
-                if index >= 0:
-                    combo.setCurrentIndex(index)
-            else:
-                # Try to match original name
-                original_name = inp_obj.get('name', '')
+            # If original name is not in bb_labels, add it to the combo box so it can be selected
+            # This ensures the original name is always available as the default
+            if original_name and original_name not in self.bb_labels:
+                combo.addItem(original_name)
+            
+            # Set current selection - prioritize original name as default
+            # First, try to use original name (this is always the default)
+            if original_name:
                 index = combo.findText(original_name)
                 if index >= 0:
                     combo.setCurrentIndex(index)
-                    # Store it in the map and emit signal to sync with main window
-                    self.input_object_label_map[idx] = original_name
-                    self.input_object_label_changed.emit(idx, original_name)
-                elif self.bb_labels:
-                    # If original name doesn't match, select first label by default
-                    first_label = self.bb_labels[0]
-                    combo.setCurrentIndex(0)
-                    self.input_object_label_map[idx] = first_label
-                    self.input_object_label_changed.emit(idx, first_label)
+                    # Store it in the map if not already set or different
+                    if not current_label or current_label != original_name:
+                        self.input_object_label_map[idx] = original_name
+                        self.input_object_label_changed.emit(idx, original_name)
+            # If no original name, use previously selected label if available
+            elif current_label:
+                index = combo.findText(current_label)
+                if index >= 0:
+                    combo.setCurrentIndex(index)
+            # Only use first label as fallback if no original name and no previous selection
+            elif self.bb_labels:
+                first_label = self.bb_labels[0]
+                combo.setCurrentIndex(0)
+                self.input_object_label_map[idx] = first_label
+                self.input_object_label_changed.emit(idx, first_label)
             
             # Connect signal to handle label change
             combo.currentTextChanged.connect(

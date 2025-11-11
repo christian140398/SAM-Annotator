@@ -66,7 +66,8 @@ class VOCExporter:
     
     def export(self, xml_path: str, image_path: str, segments: List[Tuple[np.ndarray, str]], 
                labels: List[Dict], input_xml_path: Optional[str] = None, 
-               image_shape: Optional[Tuple[int, int]] = None):
+               image_shape: Optional[Tuple[int, int]] = None,
+               input_object_labels: Optional[Dict[int, str]] = None):
         """
         Export annotations to VOC XML format
         
@@ -77,6 +78,7 @@ class VOCExporter:
             labels: List of label dicts with 'id' and 'name' keys
             input_xml_path: Optional path to input XML file to copy original objects from
             image_shape: Optional (height, width) tuple. If None, will load from image_path
+            input_object_labels: Optional dict mapping input object index to selected label name
         """
         # Load image to get dimensions
         h, w = None, None
@@ -125,14 +127,21 @@ class VOCExporter:
         segmented_elem.text = "1" if segments else "0"
         
         # First, copy all original objects from input XML file (with their original bounding boxes)
+        # Use selected labels from segments panel instead of original names
         if input_objects:
             print(f"Copying {len(input_objects)} original object(s) from input XML...")
-            for inp_obj in input_objects:
+            for idx, inp_obj in enumerate(input_objects):
                 # Create object element for original object
                 obj_elem = ET.SubElement(root, "object")
                 
+                # Use selected label if available, otherwise use original name
+                if input_object_labels is not None:
+                    selected_label = input_object_labels.get(idx, inp_obj.get('name', 'unknown'))
+                else:
+                    selected_label = inp_obj.get('name', 'unknown')
+                
                 name_elem = ET.SubElement(obj_elem, "name")
-                name_elem.text = inp_obj['name']
+                name_elem.text = selected_label
                 
                 pose_elem = ET.SubElement(obj_elem, "pose")
                 pose_elem.text = "Unspecified"

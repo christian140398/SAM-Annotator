@@ -48,6 +48,9 @@ output/**/*.csv
 # Label file
 label.txt
 
+# BB label file
+bb_label.txt
+
 # Python
 __pycache__/
 *.py[cod]

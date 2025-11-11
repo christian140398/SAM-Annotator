@@ -918,6 +918,9 @@ class MainWindow(QMainWindow):
             h, w = self.image_view.base_image.shape[:2]
             image_shape = (h, w)
         
+        # Get selected labels from segments panel for input objects
+        input_object_labels = self.segments_panel.get_input_object_labels()
+        
         # Use VOC exporter
         exporter = VOCExporter()
         exporter.export(
@@ -926,7 +929,8 @@ class MainWindow(QMainWindow):
             segments=segments,
             labels=self.labels,
             input_xml_path=self.current_xml_path,
-            image_shape=image_shape
+            image_shape=image_shape,
+            input_object_labels=input_object_labels
         )
         
         return True
@@ -951,7 +955,7 @@ class MainWindow(QMainWindow):
         
         # Get categories from config or labels
         if config.COCO_CATEGORIES is not None:
-            categories = config.COCO_CATEGORIES
+            categories = config.COCO_CATEGORIES.copy()
         else:
             # Auto-load from labels
             categories = [label["name"] for label in self.labels]
@@ -959,11 +963,27 @@ class MainWindow(QMainWindow):
         if not categories:
             categories = ["UAV"]  # Default fallback
         
-        # Create COCO exporter
+        # Merge bb_labels into categories to ensure input object labels can be saved
+        # This allows labels selected in the segment panel (from bb_label.txt) to be included
+        for bb_label in self.bb_labels:
+            if bb_label not in categories:
+                categories.append(bb_label)
+        
+        # Load input objects to get original names
+        input_objects = self._load_input_objects(self.current_xml_path)
+        input_object_labels = self.segments_panel.get_input_object_labels()
+        
+        # Add original names from input objects to categories
+        # This ensures original categories are preserved even if not in label.txt or bb_label.txt
+        for inp_obj in input_objects:
+            original_name = inp_obj.get('name', '')
+            if original_name and original_name not in categories:
+                categories.append(original_name)
+        
+        # Create COCO exporter with all categories (including original names)
         exporter = COCOExporter(categories)
         
         # Add image (use base name as image_id for per-image files)
-        base_name = os.path.splitext(os.path.basename(image_path))[0]
         image_id = 1  # For per-image COCO files, we use 1
         exporter.add_image(
             image_id=image_id,
@@ -973,7 +993,24 @@ class MainWindow(QMainWindow):
             output_dir=os.path.dirname(json_path)
         )
         
-        # Add annotations
+        if input_objects:
+            for idx, inp_obj in enumerate(input_objects):
+                # Use selected label if available, otherwise use original name
+                if input_object_labels is not None:
+                    selected_label = input_object_labels.get(idx, inp_obj.get('name', 'unknown'))
+                else:
+                    selected_label = inp_obj.get('name', 'unknown')
+                
+                # Only add if category is in the categories list
+                if selected_label in categories:
+                    exporter.add_bbox_annotation(
+                        image_id=image_id,
+                        bbox=inp_obj['bbox'],
+                        category_name=selected_label,
+                        image_shape=(h, w)
+                    )
+        
+        # Add annotations for segments
         for mask, label_id in segments:
             # Get label name
             label_name = categories[0] if categories else "UAV"  # Default

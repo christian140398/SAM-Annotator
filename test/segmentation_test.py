@@ -288,14 +288,14 @@ def load_segmentations_from_coco(json_path):
     return segmentations
 
 
-def draw_segmentations_opencv(image, segmentations, original_bboxes=None, output_path=None, color_palette=None):
+def draw_segmentations_opencv(image, segmentations, original_bboxes_with_labels=None, output_path=None, color_palette=None):
     """
     Draw polygon segmentations and bounding boxes on image using OpenCV.
     
     Args:
         image: Input image (BGR format)
         segmentations: List of (label_name, polygon_points, bbox) tuples
-        original_bboxes: List of original bounding boxes from input XML to draw in different style
+        original_bboxes_with_labels: List of (bbox, label) tuples from input XML to draw in different style
         output_path: Optional path to save the result image
         color_palette: Dict mapping label names to RGB tuples
     """
@@ -304,36 +304,63 @@ def draw_segmentations_opencv(image, segmentations, original_bboxes=None, output
     
     img = image.copy()
     
+    # Track which bboxes we've already drawn as original bboxes to avoid duplicates
+    drawn_original_bboxes = set()
+    
     # Draw original bounding boxes first (if any) in a distinctive color
-    if original_bboxes:
-        for orig_bbox in original_bboxes:
+    if original_bboxes_with_labels:
+        for orig_bbox, orig_label in original_bboxes_with_labels:
             if orig_bbox:
                 xmin, ymin, xmax, ymax = orig_bbox
-                # Draw original bounding box in white with dashed style
+                # Store this bbox to skip it in the regular segmentations loop
+                drawn_original_bboxes.add((xmin, ymin, xmax, ymax))
+                
+                # Get color for the label
+                color_rgb = color_palette.get(orig_label.lower(), color_palette["default"])
+                color = (color_rgb[2], color_rgb[1], color_rgb[0])  # Convert RGB to BGR
+                
+                # Draw original bounding box in red with dashed style
                 # Create dashed effect
                 dash_length = 15
                 gap_length = 10
+                red_color = (0, 0, 255)  # Red in BGR format
                 # Top edge
                 for x in range(xmin, xmax, dash_length + gap_length):
                     end_x = min(x + dash_length, xmax)
-                    cv2.line(img, (x, ymin), (end_x, ymin), (255, 255, 255), 3)
+                    cv2.line(img, (x, ymin), (end_x, ymin), red_color, 3)
                 # Bottom edge
                 for x in range(xmin, xmax, dash_length + gap_length):
                     end_x = min(x + dash_length, xmax)
-                    cv2.line(img, (x, ymax), (end_x, ymax), (255, 255, 255), 3)
+                    cv2.line(img, (x, ymax), (end_x, ymax), red_color, 3)
                 # Left edge
                 for y in range(ymin, ymax, dash_length + gap_length):
                     end_y = min(y + dash_length, ymax)
-                    cv2.line(img, (xmin, y), (xmin, end_y), (255, 255, 255), 3)
+                    cv2.line(img, (xmin, y), (xmin, end_y), red_color, 3)
                 # Right edge
                 for y in range(ymin, ymax, dash_length + gap_length):
                     end_y = min(y + dash_length, ymax)
-                    cv2.line(img, (xmax, y), (xmax, end_y), (255, 255, 255), 3)
-                # Add label
-                cv2.putText(img, "Original BBox", (xmin, ymin - 10), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+                    cv2.line(img, (xmax, y), (xmax, end_y), red_color, 3)
+                # Add label from output file
+                (text_width, text_height), _ = cv2.getTextSize(orig_label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                cv2.rectangle(img, (int(xmin), int(ymin) - text_height - 8), 
+                             (int(xmin) + text_width + 4, int(ymin)), color, -1)
+                cv2.putText(img, orig_label, (int(xmin) + 2, int(ymin) - 5), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
     
     for label_name, polygon_points, bbox in segmentations:
+        # Skip if this bbox matches an original bbox (already drawn above)
+        if bbox is not None:
+            xmin, ymin, xmax, ymax = bbox
+            # Check if this bbox matches any original bbox (within tolerance)
+            skip = False
+            for orig_bbox_tuple in drawn_original_bboxes:
+                oxmin, oymin, oxmax, oymax = orig_bbox_tuple
+                if (abs(xmin - oxmin) < 5 and abs(ymin - oymin) < 5 and
+                    abs(xmax - oxmax) < 5 and abs(ymax - oymax) < 5):
+                    skip = True
+                    break
+            if skip:
+                continue
         # Get color for this label (RGB format)
         color_rgb = color_palette.get(label_name.lower(), color_palette["default"])
         # Convert RGB to BGR for OpenCV
@@ -382,14 +409,14 @@ def draw_segmentations_opencv(image, segmentations, original_bboxes=None, output
         print(f"Saved result to: {output_path}")
 
 
-def draw_segmentations_matplotlib(image, segmentations, original_bboxes=None, output_path=None, color_palette=None):
+def draw_segmentations_matplotlib(image, segmentations, original_bboxes_with_labels=None, output_path=None, color_palette=None):
     """
     Draw polygon segmentations and bounding boxes on image using Matplotlib.
     
     Args:
         image: Input image (BGR format, will be converted to RGB)
         segmentations: List of (label_name, polygon_points, bbox) tuples
-        original_bboxes: List of original bounding boxes from input XML to draw in different style
+        original_bboxes_with_labels: List of (bbox, label) tuples from input XML to draw in different style
         output_path: Optional path to save the result image
         color_palette: Dict mapping label names to RGB tuples
     """
@@ -411,23 +438,47 @@ def draw_segmentations_matplotlib(image, segmentations, original_bboxes=None, ou
     ax.imshow(img_rgb)
     ax.set_title("Segmentation Visualization", fontsize=14, fontweight='bold')
     
+    # Track which bboxes we've already drawn as original bboxes to avoid duplicates
+    drawn_original_bboxes = set()
+    
     # Draw original bounding boxes first (if any) in white with dashed style
-    if original_bboxes:
-        for i, orig_bbox in enumerate(original_bboxes):
+    if original_bboxes_with_labels:
+        for orig_bbox, orig_label in original_bboxes_with_labels:
             if orig_bbox:
                 xmin, ymin, xmax, ymax = orig_bbox
+                # Store this bbox to skip it in the regular segmentations loop
+                drawn_original_bboxes.add((xmin, ymin, xmax, ymax))
+                
                 width = xmax - xmin
                 height = ymax - ymin
+                # Get color for the label
+                color_rgb_int = color_palette.get(orig_label.lower(), color_palette["default"])
+                color_rgb = (color_rgb_int[0] / 255.0, color_rgb_int[1] / 255.0, color_rgb_int[2] / 255.0)
+                
                 orig_rect = Rectangle((xmin, ymin), width, height,
-                                     linewidth=3, edgecolor='white', 
+                                     linewidth=3, edgecolor='red', 
                                      facecolor='none', linestyle='--', alpha=0.9)
                 ax.add_patch(orig_rect)
-                ax.text(xmin, ymin - 8, "Original BBox", color='white', 
-                       fontsize=9, fontweight='bold',
-                       bbox=dict(boxstyle='round,pad=0.3', facecolor='black', 
-                                edgecolor='white', alpha=0.7, linewidth=1))
+                # Show label from output file
+                ax.text(xmin, ymin - 8, orig_label, color=color_rgb, 
+                       fontsize=10, fontweight='bold',
+                       bbox=dict(boxstyle='round,pad=0.3', facecolor='white', 
+                                edgecolor=color_rgb, alpha=0.9, linewidth=1.5))
     
     for label_name, polygon_points, bbox in segmentations:
+        # Skip if this bbox matches an original bbox (already drawn above)
+        if bbox is not None:
+            xmin, ymin, xmax, ymax = bbox
+            # Check if this bbox matches any original bbox (within tolerance)
+            skip = False
+            for orig_bbox_tuple in drawn_original_bboxes:
+                oxmin, oymin, oxmax, oymax = orig_bbox_tuple
+                if (abs(xmin - oxmin) < 5 and abs(ymin - oymin) < 5 and
+                    abs(xmax - oxmax) < 5 and abs(ymax - oymax) < 5):
+                    skip = True
+                    break
+            if skip:
+                continue
         # Get color for this label (already in RGB format)
         color_rgb_int = color_palette.get(label_name.lower(), color_palette["default"])
         color_rgb = (color_rgb_int[0] / 255.0, color_rgb_int[1] / 255.0, color_rgb_int[2] / 255.0)
@@ -614,17 +665,33 @@ Examples:
         return
     
     # Load original bounding boxes from input XML if available (only for VOC format)
-    original_bboxes = []
+    # Map original bboxes to their labels from output file
+    original_bboxes_with_labels = []
     if args.show_original_bbox:
         input_xml_path = os.path.join(args.input_dir, "labels", f"{base_name}.xml")
         if os.path.exists(input_xml_path):
             print(f"\nLoading original bounding boxes from: {input_xml_path}")
             try:
                 input_segmentations = load_segmentations_from_xml(input_xml_path)
-                for label, points, bbox in input_segmentations:
-                    if bbox is not None:
-                        original_bboxes.append(bbox)
-                        print(f"  Original bbox: {bbox} ({label})")
+                # Match original bboxes with output segmentations to get labels from output
+                for input_label, _, input_bbox in input_segmentations:
+                    if input_bbox is not None:
+                        # Try to find matching bbox in output segmentations to get the output label
+                        output_label = None
+                        for seg_label, _, seg_bbox in segmentations:
+                            if seg_bbox is not None:
+                                # Check if bboxes match (within small tolerance)
+                                xmin1, ymin1, xmax1, ymax1 = input_bbox
+                                xmin2, ymin2, xmax2, ymax2 = seg_bbox
+                                if (abs(xmin1 - xmin2) < 5 and abs(ymin1 - ymin2) < 5 and
+                                    abs(xmax1 - xmax2) < 5 and abs(ymax1 - ymax2) < 5):
+                                    output_label = seg_label
+                                    break
+                        
+                        # Use output label if found, otherwise use input label
+                        label_to_show = output_label if output_label else input_label
+                        original_bboxes_with_labels.append((input_bbox, label_to_show))
+                        print(f"  Original bbox: {input_bbox} -> {label_to_show}")
             except Exception as e:
                 print(f"Warning: Could not load original bounding boxes: {e}")
     
@@ -635,13 +702,13 @@ Examples:
     # Draw and display
     print(f"\nDisplaying visualization using {args.backend} backend...")
     if args.backend == "opencv":
-        draw_segmentations_opencv(image, segmentations, original_bboxes if args.show_original_bbox else None, args.output, color_palette)
+        draw_segmentations_opencv(image, segmentations, original_bboxes_with_labels if args.show_original_bbox else None, args.output, color_palette)
     else:
         if not HAS_MATPLOTLIB:
             print("Warning: matplotlib not available, falling back to opencv backend")
-            draw_segmentations_opencv(image, segmentations, original_bboxes if args.show_original_bbox else None, args.output, color_palette)
+            draw_segmentations_opencv(image, segmentations, original_bboxes_with_labels if args.show_original_bbox else None, args.output, color_palette)
         else:
-            draw_segmentations_matplotlib(image, segmentations, original_bboxes if args.show_original_bbox else None, args.output, color_palette)
+            draw_segmentations_matplotlib(image, segmentations, original_bboxes_with_labels if args.show_original_bbox else None, args.output, color_palette)
     
     print("Done!")
 
