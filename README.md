@@ -8,6 +8,7 @@ A graphical annotation tool for image segmentation using Meta's Segment Anything
 - **Brush Tool**: Draw and erase segments directly on the image for precise mask editing
 - **Multi-category Support**: Organize segments by customizable labels loaded from a configuration file
 - **Dynamic Label System**: Labels are loaded from `label.txt` with automatically generated colors
+- **Bounding Box Label Management**: Change original bounding box object labels using `bb_label.txt` - perfect for relabeling input annotations
 - **Enhanced Undo System**: Undo brush strokes, point additions, and segment deletions with confirmation dialogs
 - **Flexible Export Formats**: Export annotations in VOC (Pascal VOC XML) or COCO (JSON) format, configurable via `config.py`
 
@@ -29,15 +30,25 @@ pip install -r requirements.txt
    - Place it in the `models/` folder
 
 4. Set up your labels:
-   - Copy `label_example.txt` to `label.txt` in the project root
-   - Edit `label.txt` to add your label categories (one label per line)
-   - Example `label.txt`:
-     ```
-     cat
-     dog
-     car
-     ```
-   - **Note**: `label.txt` is in `.gitignore` and won't be committed to the repository. Use `label_example.txt` as a template.
+   - **Segment Labels** (`label.txt`): Create `label.txt` in the project root, `label_example.txt` provides an example.
+     - Edit `label.txt` to add your label categories for segmentation masks (one label per line)
+     - Example `label.txt`:
+       ```
+       wheel
+       door
+       window
+       ```
+   - **Bounding Box Labels** (`bb_label.txt`) - Optional: Create `bb_label.txt` in the project root, `bb_label_example.txt` provides an example. 
+     - Edit `bb_label.txt` to add label categories for bounding box objects (one label per line)
+     - These labels appear in the segment panel dropdown for changing original bounding box labels
+     - Example `bb_label.txt`:
+       ```
+       tesla
+       bmw
+       volvo
+       ```
+     - **Note**: If `bb_label.txt` is not provided, the original label names from input XML files will be used
+   - **Note**: Both `label.txt` and `bb_label.txt` are in `.gitignore` and won't be committed to the repository. Use the example files as templates.
 
 5. Configure export format (optional):
    - Edit `config.py` to set your preferred export format
@@ -62,6 +73,10 @@ python main.py
    - **Segment Tool (A)**: Click to add positive (include) points (green), right-click to add negative (exclude) points (red)
    - **Brush Tool (S)**: Left-click and drag to draw/add to segment, right-click and drag to erase/remove from segment
    - **Highlight Current Segment (H)**: Hold H to show a white outline around the current segment being created
+   - **Change Bounding Box Labels**: In the segment panel, use the dropdown menus to change labels for original bounding box objects
+     - Original bounding box labels are displayed at the top of the segment panel
+     - Select a new label from the dropdown (labels from `bb_label.txt`)
+     - The selected label will be saved in the output file instead of the original label
    - Assign categories to segments
    - Save annotations
 
@@ -96,20 +111,52 @@ COCO_CATEGORIES = None  # Set to None to auto-load from label.txt
 - **VOC Format** (Pascal VOC XML): 
   - Output: `.xml` files in `output/labels/`
   - Includes bounding boxes and polygon segmentations
+  - Original bounding box objects are saved with their selected labels (from segment panel dropdown)
   - Compatible with many computer vision tools
 - **COCO Format** (JSON):
   - Output: `.json` files in `output/labels/`
   - Includes RLE (Run-Length Encoded) segmentations and bounding boxes
+  - Original bounding box objects are converted to rectangular masks and saved with their selected labels
+  - Original labels are automatically added to the categories list if not already present
   - Standard format for many deep learning frameworks
 
 ### Label Configuration
 
-The application uses a simple text file (`label.txt`) to define the available label categories. Each line in the file represents one label category.
+The application uses two label configuration files:
+
+#### Segment Labels (`label.txt`)
+
+Defines the available label categories for segmentation masks created with SAM.
 
 - **File Location**: `label.txt` in the project root directory
 - **Format**: One label name per line (no empty lines or special characters)
 - **Color Assignment**: Colors are automatically generated deterministically based on the label name, ensuring consistency across sessions
 - **Example**: See `label_example.txt` for a sample label configuration
+  ```
+  wheel
+  door
+  window
+  ```
+
+#### Bounding Box Labels (`bb_label.txt`) - Optional
+
+Defines the available label categories for changing original bounding box object labels. This is useful when you need to relabel input annotations (e.g., changing "UAV" to "tesla", "bmw", etc.).
+
+- **File Location**: `bb_label.txt` in the project root directory
+- **Format**: One label name per line (no empty lines or special characters)
+- **Usage**: 
+  - When an image is loaded, original bounding box objects from the input XML are displayed in the segment panel
+  - Each object shows its original label name and a dropdown menu
+  - Users can select a new label from `bb_label.txt` to replace the original label
+  - The selected label is saved in the output file (both VOC and COCO formats)
+  - If the original label name exists in `bb_label.txt`, it will be automatically selected as the default
+- **Example**: See `bb_label_example.txt` for a sample label configuration
+  ```
+  tesla
+  bmw
+  volvo
+  ```
+- **Note**: If `bb_label.txt` is not provided, the original label names from input XML files will be used as-is
 
 ## Visualization Tool
 
