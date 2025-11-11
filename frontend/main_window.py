@@ -33,6 +33,7 @@ OUTPUT_LABEL_DIR = r"output\labels"  # Output labels folder
 CLIP_TO_XML_BOX = True
 # Label file path (relative to project root)
 LABEL_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "label.txt")
+BB_LABEL_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bb_label.txt")
 
 
 def load_labels_from_file(label_file: str) -> List[str]:
@@ -168,12 +169,14 @@ class MainWindow(QMainWindow):
         self.sam_model: Optional[SAMModel] = None
         self.preload_sam_model: Optional[SAMModel] = None  # Separate SAM model for preloading
         self.labels: List[Dict] = []
+        self.bb_labels: List[str] = []  # Labels for bounding box objects (from bb_label.txt)
         self.current_label_id: Optional[str] = None
         self.image_paths: List[str] = []
         self.current_image_idx = 0
         self.current_image_path: Optional[str] = None
         self.current_xml_path: Optional[str] = None
         self.label_shortcuts: List[QShortcut] = []  # Store label shortcuts
+        self.input_object_label_map: Dict[int, str] = {}  # Map input object index to selected label
         
         # Preloading state
         self.preloaded_image: Optional[np.ndarray] = None  # Preloaded next image data
@@ -187,6 +190,9 @@ class MainWindow(QMainWindow):
         
         # Initialize labels
         self.init_labels()
+        
+        # Initialize bb_labels (for bounding box objects)
+        self.init_bb_labels()
         
         # Create output directories if they don't exist (with .gitkeep files)
         ensure_output_directories()
@@ -254,6 +260,7 @@ class MainWindow(QMainWindow):
         # Segments panel
         self.segments_panel = SegmentsPanel()
         self.segments_panel.set_labels(self.labels)
+        self.segments_panel.set_bb_labels(self.bb_labels)
         content_layout.addWidget(self.segments_panel, 0)
         
         main_layout.addLayout(content_layout, 1)
@@ -321,6 +328,12 @@ class MainWindow(QMainWindow):
         # Set first label as default
         if self.labels:
             self.current_label_id = self.labels[0]["id"]
+    
+    def init_bb_labels(self):
+        """Initialize bb_labels from bb_label.txt file"""
+        self.bb_labels = load_labels_from_file(BB_LABEL_FILE)
+        if not self.bb_labels:
+            print("No labels found in bb_label.txt")
     
     def load_image_list(self):
         """Load list of images from input/images directory"""
@@ -482,6 +495,13 @@ class MainWindow(QMainWindow):
             # Update segments panel
             self.update_segments_panel()
             
+            # Update segments panel with input objects (with indices for label mapping)
+            input_objects = self._load_input_objects(xml_path)
+            # Reset label map for new image
+            self.input_object_label_map = {}
+            # Pass input objects with their indices
+            self.segments_panel.set_input_objects(input_objects, self.input_object_label_map)
+            
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load image: {str(e)}")
     
@@ -501,6 +521,7 @@ class MainWindow(QMainWindow):
         self.segments_panel.visibility_toggled.connect(self.on_segment_visibility_toggled)
         self.segments_panel.label_updated.connect(self.on_segment_label_updated)
         self.segments_panel.segment_hovered.connect(self.on_segment_hovered)
+        self.segments_panel.input_object_label_changed.connect(self.on_input_object_label_changed)
         
         # Topbar -> MainWindow
         self.topbar.label_selected.connect(self.on_label_selected)
@@ -800,6 +821,10 @@ class MainWindow(QMainWindow):
         self.image_view.update_display()
         self.image_view.update()
     
+    def on_input_object_label_changed(self, object_index: int, selected_label: str):
+        """Handle input object label change from panel"""
+        self.input_object_label_map[object_index] = selected_label
+    
     def update_segments_panel(self):
         """Update segments panel with current segments"""
         segments = self.image_view.get_segments()
@@ -931,14 +956,19 @@ class MainWindow(QMainWindow):
         segmented_elem.text = "1" if segments else "0"
         
         # First, copy all original objects from input XML file (with their original bounding boxes)
+        # Use selected labels from segments panel instead of original names
         if input_objects:
+            # Get selected labels from segments panel
+            selected_labels = self.segments_panel.get_input_object_labels()
             print(f"Copying {len(input_objects)} original object(s) from input XML...")
-            for inp_obj in input_objects:
+            for idx, inp_obj in enumerate(input_objects):
                 # Create object element for original object
                 obj_elem = ET.SubElement(root, "object")
                 
+                # Use selected label if available, otherwise use original name
+                selected_label = selected_labels.get(idx, inp_obj.get('name', 'unknown'))
                 name_elem = ET.SubElement(obj_elem, "name")
-                name_elem.text = inp_obj['name']
+                name_elem.text = selected_label
                 
                 pose_elem = ET.SubElement(obj_elem, "pose")
                 pose_elem.text = "Unspecified"

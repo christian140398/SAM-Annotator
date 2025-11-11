@@ -5,7 +5,7 @@ Replicates the functionality of the React SegmentsPanel component
 from typing import Optional, List, Dict, Any
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QLineEdit, QScrollArea, QFrame
+    QLineEdit, QScrollArea, QFrame, QComboBox
 )
 from PySide6.QtCore import Qt, Signal
 from frontend.theme import (
@@ -147,6 +147,7 @@ class SegmentsPanel(QWidget):
     visibility_toggled = Signal(str)  # Emits segment_id when visibility is toggled
     label_updated = Signal(str, str)  # Emits (segment_id, label_id) when label is updated
     segment_hovered = Signal(str, bool)  # Emits (segment_id, is_hovered) when segment is hovered
+    input_object_label_changed = Signal(int, str)  # Emits (object_index, selected_label) when input object label changes
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -156,8 +157,11 @@ class SegmentsPanel(QWidget):
         # Internal state
         self.segments: List[Dict[str, Any]] = []
         self.labels: List[Dict[str, Any]] = []
+        self.bb_labels: List[str] = []  # Labels for bounding box objects
         self.selected_segment_id: Optional[str] = None
         self.search_query = ""
+        self.input_objects: List[Dict[str, Any]] = []  # Store input objects from XML
+        self.input_object_label_map: Dict[int, str] = {}  # Map object index to selected label
         
         # Apply styles
         self.apply_styles()
@@ -176,6 +180,14 @@ class SegmentsPanel(QWidget):
         header_layout = QVBoxLayout(header_widget)
         header_layout.setContentsMargins(16, 16, 16, 16)
         header_layout.setSpacing(12)
+        
+        # Input objects container (for displaying input objects with label selection)
+        self.input_objects_container = QWidget()
+        self.input_objects_container.setVisible(False)  # Hidden initially
+        self.input_objects_layout = QVBoxLayout(self.input_objects_container)
+        self.input_objects_layout.setContentsMargins(0, 0, 0, 0)
+        self.input_objects_layout.setSpacing(8)
+        header_layout.addWidget(self.input_objects_container)
         
         # Title
         self.title_label = QLabel("Segments (0)")
@@ -259,6 +271,119 @@ class SegmentsPanel(QWidget):
         """Set the labels list"""
         self.labels = labels
         self.update_segments_display()
+    
+    def set_bb_labels(self, bb_labels: List[str]):
+        """Set the bb_labels list (for bounding box objects)"""
+        self.bb_labels = bb_labels
+    
+    def set_input_objects(self, input_objects: List[Dict[str, Any]], label_map: Dict[int, str]):
+        """Set the input objects from XML file with their label mappings"""
+        self.input_objects = input_objects
+        self.input_object_label_map = label_map.copy()  # Copy the map
+        self.update_input_objects_display()
+    
+    def update_input_objects_display(self):
+        """Update the display of input objects with label selection combo boxes"""
+        # Clear existing widgets
+        while self.input_objects_layout.count():
+            item = self.input_objects_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        if not self.input_objects:
+            self.input_objects_container.setVisible(False)
+            return
+        
+        # Create a widget for each input object
+        for idx, inp_obj in enumerate(self.input_objects):
+            obj_widget = QFrame()
+            obj_widget.setStyleSheet(f"""
+                QFrame {{
+                    background-color: {BACKGROUND_MAIN};
+                    border: 1px solid {ITEM_BORDER};
+                    border-radius: 4px;
+                    padding: 8px;
+                }}
+            """)
+            obj_layout = QHBoxLayout(obj_widget)
+            obj_layout.setContentsMargins(8, 8, 8, 8)
+            obj_layout.setSpacing(8)
+            
+            # Label showing original name
+            name_label = QLabel(f"Original: {inp_obj.get('name', 'unknown')}")
+            name_label.setStyleSheet(f"""
+                font-size: 12px;
+                color: {TEXT_COLOR};
+            """)
+            name_label.setWordWrap(True)
+            obj_layout.addWidget(name_label, 1)
+            
+            # Combo box for label selection
+            combo = QComboBox()
+            combo.setStyleSheet(f"""
+                QComboBox {{
+                    background-color: {ITEM_BG};
+                    border: 1px solid {ITEM_BORDER};
+                    color: {TEXT_COLOR};
+                    padding: 4px;
+                    border-radius: 4px;
+                    font-size: 12px;
+                }}
+                QComboBox:hover {{
+                    border-color: {PRIMARY_COLOR};
+                }}
+                QComboBox::drop-down {{
+                    border: none;
+                }}
+            """)
+            
+            # Add bb_labels to combo box
+            if self.bb_labels:
+                combo.addItems(self.bb_labels)
+            else:
+                combo.addItem("No labels available")
+                combo.setEnabled(False)
+            
+            # Set current selection (use mapped label or original name if available in bb_labels)
+            current_label = self.input_object_label_map.get(idx)
+            if current_label:
+                index = combo.findText(current_label)
+                if index >= 0:
+                    combo.setCurrentIndex(index)
+            else:
+                # Try to match original name
+                original_name = inp_obj.get('name', '')
+                index = combo.findText(original_name)
+                if index >= 0:
+                    combo.setCurrentIndex(index)
+                    # Store it in the map and emit signal to sync with main window
+                    self.input_object_label_map[idx] = original_name
+                    self.input_object_label_changed.emit(idx, original_name)
+                elif self.bb_labels:
+                    # If original name doesn't match, select first label by default
+                    first_label = self.bb_labels[0]
+                    combo.setCurrentIndex(0)
+                    self.input_object_label_map[idx] = first_label
+                    self.input_object_label_changed.emit(idx, first_label)
+            
+            # Connect signal to handle label change
+            combo.currentTextChanged.connect(
+                lambda text, obj_idx=idx: self.on_input_object_label_changed(obj_idx, text)
+            )
+            
+            obj_layout.addWidget(combo, 1)
+            self.input_objects_layout.addWidget(obj_widget)
+        
+        self.input_objects_container.setVisible(True)
+    
+    def on_input_object_label_changed(self, object_index: int, selected_label: str):
+        """Handle input object label change"""
+        self.input_object_label_map[object_index] = selected_label
+        self.input_object_label_changed.emit(object_index, selected_label)
+    
+    def get_input_object_labels(self) -> Dict[int, str]:
+        """Get the current label mappings for input objects"""
+        return self.input_object_label_map.copy()
     
     def set_selected_segment(self, segment_id: Optional[str]):
         """Set the selected segment"""
