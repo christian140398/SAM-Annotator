@@ -94,13 +94,26 @@ class ImageView(QWidget):
         self.label_info: dict = {}
         
         # Tool state
-        self.active_tool = "segment"  # "segment", "brush", or "pan"
+        self.active_tool = "segment"  # "segment", "brush", "pan", or "bbox"
         
         # Brush state
         self.is_brushing = False
         self.brush_mode = "draw"  # "draw" or "erase"
         self.brush_size = 10  # Brush radius in pixels (image coordinates)
         self.last_brush_pos: Optional[Tuple[int, int]] = None  # Last brush position in image coordinates
+        
+        # Bounding box drawing state
+        self.is_drawing_bbox = False
+        self.bbox_start_pos: Optional[Tuple[int, int]] = None  # Start position in widget coordinates
+        self.bbox_current_pos: Optional[Tuple[int, int]] = None  # Current position in widget coordinates
+        self.temp_bbox: Optional[Tuple[int, int, int, int]] = None  # Temporary bbox being drawn (xmin, ymin, xmax, ymax) in image coordinates
+        
+        # Bounding box edge resizing state
+        self.is_resizing_bbox_edge = False
+        self.bbox_resize_edge: Optional[str] = None  # "top", "bottom", "left", "right"
+        self.bbox_resize_start_pos: Optional[Tuple[int, int]] = None  # Start position in image coordinates
+        self.bbox_resize_original_bbox: Optional[Tuple[int, int, int, int]] = None  # Original bbox before resizing
+        self.EDGE_DETECTION_THRESHOLD = 10  # Pixels (in image coordinates) to detect edge clicks
         
         # Create label indicator widget
         self.label_indicator = None
@@ -290,13 +303,29 @@ class ImageView(QWidget):
         
         super().resizeEvent(_event)
     
-    def update_cursor(self):
+    def update_cursor(self, widget_x: Optional[int] = None, widget_y: Optional[int] = None):
         """Update cursor based on active tool and SAM ready state"""
         # If SAM is not ready, show "not allowed" cursor for segmentation and brush
         if not self.sam_ready and (self.active_tool == "segment" or self.active_tool == "brush"):
             self.setCursor(Qt.ForbiddenCursor)
         elif self.active_tool == "pan":
             self.setCursor(Qt.OpenHandCursor)
+        elif self.active_tool == "bbox":
+            # Check if mouse is over a bounding box edge for resizing
+            if widget_x is not None and widget_y is not None and self.bounding_box is not None:
+                img_coords = self.widget_to_image_coords(widget_x, widget_y)
+                if img_coords:
+                    edge = self._detect_bbox_edge(img_coords[0], img_coords[1])
+                    if edge:
+                        # Show resize cursor based on edge
+                        if edge in ["top", "bottom"]:
+                            self.setCursor(Qt.SizeVerCursor)  # Vertical resize
+                        else:  # left or right
+                            self.setCursor(Qt.SizeHorCursor)  # Horizontal resize
+                    else:
+                        self.setCursor(Qt.CrossCursor)
+            else:
+                self.setCursor(Qt.CrossCursor)
         elif self.active_tool == "brush":
             # For brush tool, we'll use a circle cursor when drawing/erasing
             # For now use crosshair cursor (could be customized later)
@@ -362,6 +391,18 @@ class ImageView(QWidget):
         self.hovered_segment_index = None
         self.mask_history = []  # Clear undo history
         self.points_history = []  # Clear points history
+        
+        # Reset bounding box drawing state
+        self.is_drawing_bbox = False
+        self.bbox_start_pos = None
+        self.bbox_current_pos = None
+        self.temp_bbox = None
+        
+        # Reset bounding box edge resizing state
+        self.is_resizing_bbox_edge = False
+        self.bbox_resize_edge = None
+        self.bbox_resize_start_pos = None
+        self.bbox_resize_original_bbox = None
         
         # Reset pan/zoom
         self.pan_offset_x = 0
@@ -480,6 +521,41 @@ class ImageView(QWidget):
         img_y = max(0, min(img_h - 1, img_y))
         
         return img_x, img_y
+    
+    def _detect_bbox_edge(self, img_x: int, img_y: int) -> Optional[str]:
+        """
+        Detect which edge of the bounding box (if any) is near the given image coordinates.
+        
+        Args:
+            img_x: X coordinate in image space
+            img_y: Y coordinate in image space
+            
+        Returns:
+            Edge name ("top", "bottom", "left", "right") or None if not near any edge
+        """
+        if self.bounding_box is None:
+            return None
+        
+        xmin, ymin, xmax, ymax = self.bounding_box
+        threshold = self.EDGE_DETECTION_THRESHOLD / self.display_scale  # Adjust for zoom
+        
+        # Check top edge
+        if abs(img_y - ymin) <= threshold and xmin <= img_x <= xmax:
+            return "top"
+        
+        # Check bottom edge
+        if abs(img_y - ymax) <= threshold and xmin <= img_x <= xmax:
+            return "bottom"
+        
+        # Check left edge
+        if abs(img_x - xmin) <= threshold and ymin <= img_y <= ymax:
+            return "left"
+        
+        # Check right edge
+        if abs(img_x - xmax) <= threshold and ymin <= img_y <= ymax:
+            return "right"
+        
+        return None
     
     def _initialize_mask_for_brush(self):
         """Initialize an empty mask for brush drawing if one doesn't exist"""
@@ -890,6 +966,14 @@ class ImageView(QWidget):
                 cv2.line(overlay, (xmax, y), (xmax, end_y), color, thickness)
                 y += dash_length + gap_length
         
+        # Draw temporary bounding box being drawn
+        if self.temp_bbox is not None:
+            xmin, ymin, xmax, ymax = self.temp_bbox
+            color = (0, 255, 0)  # Green in BGR for temporary bbox
+            thickness = 2
+            # Draw rectangle outline
+            cv2.rectangle(overlay, (xmin, ymin), (xmax, ymax), color, thickness)
+        
         return overlay
     
     def update_display(self):
@@ -1054,6 +1138,26 @@ class ImageView(QWidget):
             # Right click: negative point (only if SAM is ready and space is not held)
             if self.sam_ready:
                 self.add_point(event.x(), event.y(), False)
+        elif event.button() == Qt.LeftButton and self.active_tool == "bbox" and not self.space_pressed:
+            # Left click: start drawing bounding box
+            if self.base_image is not None:
+                self.is_drawing_bbox = True
+                self.bbox_start_pos = (event.x(), event.y())
+                self.bbox_current_pos = (event.x(), event.y())
+                self.temp_bbox = None
+        elif event.button() == Qt.RightButton and self.active_tool == "bbox" and not self.space_pressed:
+            # Right click: check if clicking on bounding box edge to resize
+            if self.base_image is not None and self.bounding_box is not None:
+                img_coords = self.widget_to_image_coords(event.x(), event.y())
+                if img_coords:
+                    edge = self._detect_bbox_edge(img_coords[0], img_coords[1])
+                    if edge:
+                        # Start resizing this edge
+                        self.is_resizing_bbox_edge = True
+                        self.bbox_resize_edge = edge
+                        self.bbox_resize_start_pos = img_coords
+                        self.bbox_resize_original_bbox = self.bounding_box
+                        print(f"Resizing bounding box {edge} edge")
         super().mousePressEvent(event)
     
     def mouseMoveEvent(self, event):
@@ -1095,6 +1199,56 @@ class ImageView(QWidget):
             if self.is_brushing:
                 self.is_brushing = False
                 self.last_brush_pos = None
+        elif self.is_drawing_bbox and self.active_tool == "bbox" and not self.space_pressed:
+            # Update bounding box drawing
+            self.bbox_current_pos = (event.x(), event.y())
+            # Convert widget coordinates to image coordinates
+            if self.bbox_start_pos is not None:
+                start_img = self.widget_to_image_coords(self.bbox_start_pos[0], self.bbox_start_pos[1])
+                current_img = self.widget_to_image_coords(event.x(), event.y())
+                if start_img is not None and current_img is not None:
+                    x1, y1 = start_img
+                    x2, y2 = current_img
+                    # Calculate bounding box (xmin, ymin, xmax, ymax)
+                    xmin = min(x1, x2)
+                    ymin = min(y1, y2)
+                    xmax = max(x1, x2)
+                    ymax = max(y1, y2)
+                    self.temp_bbox = (xmin, ymin, xmax, ymax)
+                    # Update display to show temporary bbox
+                    self.update_display()
+                    self.update()
+        elif self.is_resizing_bbox_edge and self.active_tool == "bbox" and not self.space_pressed:
+            # Update bounding box edge resizing
+            current_img = self.widget_to_image_coords(event.x(), event.y())
+            if current_img is not None and self.bounding_box is not None and self.bbox_resize_edge is not None:
+                x, y = current_img
+                xmin, ymin, xmax, ymax = self.bounding_box
+                
+                # Resize based on which edge is being dragged
+                # Constrain movement along the edge's axis
+                if self.bbox_resize_edge == "top":
+                    # Top edge: only change ymin, keep xmin/xmax the same
+                    ymin = max(0, min(y, ymax - 1))  # Ensure ymin < ymax
+                elif self.bbox_resize_edge == "bottom":
+                    # Bottom edge: only change ymax, keep xmin/xmax the same
+                    ymax = min(self.base_image.shape[0] - 1, max(y, ymin + 1))  # Ensure ymax > ymin
+                elif self.bbox_resize_edge == "left":
+                    # Left edge: only change xmin, keep ymin/ymax the same
+                    xmin = max(0, min(x, xmax - 1))  # Ensure xmin < xmax
+                elif self.bbox_resize_edge == "right":
+                    # Right edge: only change xmax, keep ymin/ymax the same
+                    xmax = min(self.base_image.shape[1] - 1, max(x, xmin + 1))  # Ensure xmax > xmin
+                
+                # Update bounding box
+                self.bounding_box = (xmin, ymin, xmax, ymax)
+                # Update display
+                self.update_display()
+                self.update()
+        else:
+            # Update cursor when hovering over bbox edges (for bbox tool)
+            if self.active_tool == "bbox" and not self.space_pressed:
+                self.update_cursor(event.x(), event.y())
         super().mouseMoveEvent(event)
     
     def mouseReleaseEvent(self, event):
@@ -1116,6 +1270,34 @@ class ImageView(QWidget):
             # Emit mask updated signal
             if self.current_mask is not None:
                 self.mask_updated.emit(self.current_mask)
+        elif event.button() == Qt.LeftButton and self.is_drawing_bbox and self.active_tool == "bbox":
+            # Finish drawing bounding box
+            if self.temp_bbox is not None:
+                # Set the bounding box
+                self.bounding_box = self.temp_bbox
+                print(f"Bounding box set: {self.bounding_box}")
+            # Reset drawing state
+            self.is_drawing_bbox = False
+            self.bbox_start_pos = None
+            self.bbox_current_pos = None
+            self.temp_bbox = None
+            # Update display
+            self.update_display()
+            self.update()
+        elif event.button() == Qt.RightButton and self.is_resizing_bbox_edge and self.active_tool == "bbox":
+            # Finish resizing bounding box edge
+            if self.bounding_box is not None:
+                print(f"Bounding box resized: {self.bounding_box}")
+            # Reset resizing state
+            self.is_resizing_bbox_edge = False
+            self.bbox_resize_edge = None
+            self.bbox_resize_start_pos = None
+            self.bbox_resize_original_bbox = None
+            # Update cursor
+            self.update_cursor()
+            # Update display
+            self.update_display()
+            self.update()
         super().mouseReleaseEvent(event)
     
     def wheelEvent(self, event: QWheelEvent):

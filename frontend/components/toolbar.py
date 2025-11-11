@@ -13,9 +13,10 @@ from frontend.theme import (
     ITEM_BG, ITEM_BORDER, TEXT_COLOR, TOPBAR_TEXT_MUTED,
     PRIMARY_COLOR, PRIMARY_HOVER, PRIMARY_PRESSED
 )
+import config
 
 # Tool type definition
-Tool = Literal["select", "point", "box", "brush", "erase", "pan", "segment"]
+Tool = Literal["select", "point", "box", "brush", "erase", "pan", "segment", "bbox"]
 
 # Get the directory of this file to resolve icon paths
 _ICON_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "icons")
@@ -60,13 +61,25 @@ def create_white_svg_icon(svg_path: str) -> QIcon:
         # Fallback to loading SVG as-is
         return QIcon(svg_path)
 
-# Tool definitions with icons (SVG file paths or emoji fallback)
-TOOLS = [
+# Base tool definitions with icons (SVG file paths or emoji fallback)
+BASE_TOOLS = [
     {"id": "segment", "icon": os.path.join(_ICON_DIR, "line-segments-fill-svgrepo-com.svg"), "label": "Segment", "shortcut": "A"},
     {"id": "brush", "icon": os.path.join(_ICON_DIR, "draw-svgrepo-com.svg"), "label": "Brush", "shortcut": "S"},
     {"id": "pan", "icon": os.path.join(_ICON_DIR, "pan-cursor-svgrepo-com.svg"), "label": "Pan", "shortcut": "Space"},
-    {"id": "fit_bbox", "icon": os.path.join(_ICON_DIR, "resize-svgrepo-com.svg"), "label": "Fit to Bounding Box", "shortcut": "F"},
+    {"id": "fit_bbox", "icon": os.path.join(_ICON_DIR, "fit-to-screen-svgrepo-com.svg"), "label": "Fit to Bounding Box", "shortcut": "F"},
 ]
+
+# Bounding box tool (only when BOUNDING_BOX_EXISTS is False)
+BBOX_TOOL = {"id": "bbox", "icon": os.path.join(_ICON_DIR, "resize-svgrepo-com.svg"), "label": "Bounding Box", "shortcut": "B"}
+
+def get_tools():
+    """Get tools list based on configuration"""
+    tools = BASE_TOOLS.copy()
+    # Add bounding box tool if BOUNDING_BOX_EXISTS is False
+    if not config.BOUNDING_BOX_EXISTS:
+        # Insert bbox tool after brush tool
+        tools.insert(2, BBOX_TOOL)
+    return tools
 
 
 class ToolButton(QPushButton):
@@ -185,8 +198,11 @@ class Toolbar(QWidget):
         layout.setSpacing(8)  # gap-2 = 8px spacing
         layout.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
         
+        # Get tools based on configuration
+        tools = get_tools()
+        
         # Create tool buttons
-        for tool in TOOLS:
+        for tool in tools:
             button = ToolButton(
                 tool["id"],
                 tool["icon"],

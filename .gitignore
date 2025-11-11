@@ -29,8 +29,10 @@ input/**/*.csv
 # Output folder contents - ignore all files but keep folder structure
 output/images/*
 !output/images/.gitkeep
-output/labels/*
-!output/labels/.gitkeep
+output/segment_labels/*
+!output/segment_labels/.gitkeep
+output/bb_labels/*
+!output/bb_labels/.gitkeep
 # Ignore common image formats
 output/**/*.jpg
 output/**/*.jpeg
