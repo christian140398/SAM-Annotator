@@ -29,15 +29,15 @@ pip install -r requirements.txt
    - Place it in the `models/` folder
 
 4. Set up your labels:
-   - Copy `label_example.txt` to `label.txt` in the project root
-   - Edit `label.txt` to add your label categories (one label per line)
+   - Create a `label.txt` file in the project root
+   - Edit `label.txt` to add your label categories (one label per line), `label_example.txt` provides an example
    - Example `label.txt`:
      ```
      cat
      dog
      car
      ```
-   - **Note**: `label.txt` is in `.gitignore` and won't be committed to the repository. Use `label_example.txt` as a template.
+   - **Note**: `label.txt` is in `.gitignore` and won't be committed to the repository. 
 
 5. Configure export format (optional):
    - Edit `config.py` to set your preferred export format
