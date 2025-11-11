@@ -21,6 +21,9 @@ from frontend.components.imageview import ImageView
 from frontend.components.segmentpanel import SegmentsPanel
 from frontend.components.keybindbar import KeybindsBar
 from segmentation.sam_model import SAMModel
+from segmentation.voc_export import VOCExporter
+from segmentation.coco_export import COCOExporter
+import config
 
 
 # Configuration
@@ -909,8 +912,35 @@ class MainWindow(QMainWindow):
             image_path: Path to image file
             segments: List of (mask, label_id) tuples
         """
-        # Load image to get dimensions (or use from image_view if available)
-        h, w = None, None
+        # Get image dimensions (or use from image_view if available)
+        image_shape = None
+        if hasattr(self.image_view, 'base_image') and self.image_view.base_image is not None:
+            h, w = self.image_view.base_image.shape[:2]
+            image_shape = (h, w)
+        
+        # Use VOC exporter
+        exporter = VOCExporter()
+        exporter.export(
+            xml_path=xml_path,
+            image_path=image_path,
+            segments=segments,
+            labels=self.labels,
+            input_xml_path=self.current_xml_path,
+            image_shape=image_shape
+        )
+        
+        return True
+    
+    def save_coco_json(self, json_path: str, image_path: str, segments: List[tuple]):
+        """
+        Save segments as COCO JSON annotation file
+        
+        Args:
+            json_path: Path to save JSON file
+            image_path: Path to image file
+            segments: List of (mask, label_id) tuples
+        """
+        # Get image dimensions
         if hasattr(self.image_view, 'base_image') and self.image_view.base_image is not None:
             h, w = self.image_view.base_image.shape[:2]
         else:
@@ -919,176 +949,49 @@ class MainWindow(QMainWindow):
                 return False
             h, w = img.shape[:2]
         
-        # Load input objects if available
-        input_objects = self._load_input_objects(self.current_xml_path)
+        # Get categories from config or labels
+        if config.COCO_CATEGORIES is not None:
+            categories = config.COCO_CATEGORIES
+        else:
+            # Auto-load from labels
+            categories = [label["name"] for label in self.labels]
         
-        # Create XML root
-        root = ET.Element("annotation")
+        if not categories:
+            categories = ["UAV"]  # Default fallback
         
-        # Folder
-        folder_elem = ET.SubElement(root, "folder")
-        folder_elem.text = "images"
+        # Create COCO exporter
+        exporter = COCOExporter(categories)
         
-        # Filename
-        filename_elem = ET.SubElement(root, "filename")
-        filename_elem.text = os.path.basename(image_path)
+        # Add image (use base name as image_id for per-image files)
+        base_name = os.path.splitext(os.path.basename(image_path))[0]
+        image_id = 1  # For per-image COCO files, we use 1
+        exporter.add_image(
+            image_id=image_id,
+            file_path=image_path,
+            width=w,
+            height=h,
+            output_dir=os.path.dirname(json_path)
+        )
         
-        # Path
-        path_elem = ET.SubElement(root, "path")
-        path_elem.text = image_path
-        
-        # Source
-        source_elem = ET.SubElement(root, "source")
-        database_elem = ET.SubElement(source_elem, "database")
-        database_elem.text = "SAM Annotator"
-        
-        # Size
-        size_elem = ET.SubElement(root, "size")
-        width_elem = ET.SubElement(size_elem, "width")
-        width_elem.text = str(w)
-        height_elem = ET.SubElement(size_elem, "height")
-        height_elem.text = str(h)
-        depth_elem = ET.SubElement(size_elem, "depth")
-        depth_elem.text = "3"
-        
-        # Segmented
-        segmented_elem = ET.SubElement(root, "segmented")
-        segmented_elem.text = "1" if segments else "0"
-        
-        # First, copy all original objects from input XML file (with their original bounding boxes)
-        # Use selected labels from segments panel instead of original names
-        if input_objects:
-            # Get selected labels from segments panel
-            selected_labels = self.segments_panel.get_input_object_labels()
-            print(f"Copying {len(input_objects)} original object(s) from input XML...")
-            for idx, inp_obj in enumerate(input_objects):
-                # Create object element for original object
-                obj_elem = ET.SubElement(root, "object")
-                
-                # Use selected label if available, otherwise use original name
-                selected_label = selected_labels.get(idx, inp_obj.get('name', 'unknown'))
-                name_elem = ET.SubElement(obj_elem, "name")
-                name_elem.text = selected_label
-                
-                pose_elem = ET.SubElement(obj_elem, "pose")
-                pose_elem.text = "Unspecified"
-                
-                truncated_elem = ET.SubElement(obj_elem, "truncated")
-                truncated_elem.text = inp_obj.get('truncated', '0')
-                
-                difficult_elem = ET.SubElement(obj_elem, "difficult")
-                difficult_elem.text = inp_obj.get('difficult', '0')
-                
-                # Original bounding box
-                xmin, ymin, xmax, ymax = inp_obj['bbox']
-                bndbox_elem = ET.SubElement(obj_elem, "bndbox")
-                xmin_elem = ET.SubElement(bndbox_elem, "xmin")
-                xmin_elem.text = str(max(0, min(w - 1, xmin)))
-                ymin_elem = ET.SubElement(bndbox_elem, "ymin")
-                ymin_elem.text = str(max(0, min(h - 1, ymin)))
-                xmax_elem = ET.SubElement(bndbox_elem, "xmax")
-                xmax_elem.text = str(max(0, min(w - 1, xmax)))
-                ymax_elem = ET.SubElement(bndbox_elem, "ymax")
-                ymax_elem.text = str(max(0, min(h - 1, ymax)))
-        
-        # Now add objects for each segment (with polygon segmentations)
+        # Add annotations
         for mask, label_id in segments:
             # Get label name
-            label_name = "UAV"  # Default
+            label_name = categories[0] if categories else "UAV"  # Default
             for label in self.labels:
                 if label["id"] == label_id:
                     label_name = label["name"]
                     break
             
-            # Calculate bounding box directly from mask (faster than RLE conversion)
-            rows = np.any(mask, axis=1)
-            cols = np.any(mask, axis=0)
-            if rows.any() and cols.any():
-                seg_ymin, seg_ymax = np.where(rows)[0][[0, -1]]
-                seg_xmin, seg_xmax = np.where(cols)[0][[0, -1]]
-            else:
-                # Fallback if mask is empty
-                seg_xmin = seg_ymin = seg_xmax = seg_ymax = 0
-            
-            # Use calculated bounding box from mask for segmented objects
-            xmin = seg_xmin
-            ymin = seg_ymin
-            xmax = seg_xmax
-            ymax = seg_ymax
-            truncated = "0"
-            difficult = "0"
-            
-            # Create object element
-            obj_elem = ET.SubElement(root, "object")
-            
-            name_elem = ET.SubElement(obj_elem, "name")
-            name_elem.text = label_name
-            
-            pose_elem = ET.SubElement(obj_elem, "pose")
-            pose_elem.text = "Unspecified"
-            
-            truncated_elem = ET.SubElement(obj_elem, "truncated")
-            truncated_elem.text = truncated
-            
-            difficult_elem = ET.SubElement(obj_elem, "difficult")
-            difficult_elem.text = difficult
-            
-            # Bounding box
-            bndbox_elem = ET.SubElement(obj_elem, "bndbox")
-            xmin_elem = ET.SubElement(bndbox_elem, "xmin")
-            xmin_elem.text = str(max(0, min(w - 1, xmin)))
-            ymin_elem = ET.SubElement(bndbox_elem, "ymin")
-            ymin_elem.text = str(max(0, min(h - 1, ymin)))
-            xmax_elem = ET.SubElement(bndbox_elem, "xmax")
-            xmax_elem.text = str(max(0, min(w - 1, xmax)))
-            ymax_elem = ET.SubElement(bndbox_elem, "ymax")
-            ymax_elem.text = str(max(0, min(h - 1, ymax)))
-            
-            # Add segmentation polygon
-            # Convert mask to polygon coordinates
-            mask_uint8 = (mask * 255).astype(np.uint8)
-            contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            if len(contours) > 0:
-                # Create segmentation element (VOC format can include polygon segmentation)
-                segmentation_elem = ET.SubElement(obj_elem, "segmentation")
-                
-                # Sort contours by area (largest first) and use only the largest one
-                # This ensures we only save one polygon per segment, avoiding small artifacts
-                contours_sorted = sorted(contours, key=cv2.contourArea, reverse=True)
-                main_contour = contours_sorted[0]
-                
-                # Only create polygon if contour has at least 3 points (minimum for a polygon)
-                if len(main_contour) >= 3:
-                    # Simplify contour if too many points (reduce to reasonable number)
-                    # Use slightly higher epsilon for faster processing with minimal quality loss
-                    epsilon = 0.002 * cv2.arcLength(main_contour, True)
-                    approx = cv2.approxPolyDP(main_contour, epsilon, True)
-                    
-                    # Only save if simplified polygon has at least 3 points
-                    if len(approx) >= 3:
-                        # Create polygon element
-                        polygon_elem = ET.SubElement(segmentation_elem, "polygon")
-                        
-                        # Add points as x1,y1 x2,y2 ... format
-                        points = []
-                        for point in approx:
-                            x, y = point[0]
-                            points.append(f"{x},{y}")
-                        
-                        polygon_elem.text = " ".join(points)
-            
-            # Process events periodically to keep UI responsive during save
-            if QApplication.instance() is not None:
-                QApplication.instance().processEvents()
+            # Only add if category is in the categories list
+            if label_name in categories:
+                exporter.add_annotation(
+                    image_id=image_id,
+                    mask=mask,
+                    category_name=label_name
+                )
         
-        # Create output directory if needed
-        os.makedirs(os.path.dirname(xml_path), exist_ok=True)
-        
-        # Write XML file with proper formatting
-        tree = ET.ElementTree(root)
-        ET.indent(tree, space="\t", level=0)
-        tree.write(xml_path, encoding="utf-8", xml_declaration=True)
+        # Export JSON file
+        exporter.export(json_path)
         
         return True
     
@@ -1152,9 +1055,15 @@ class MainWindow(QMainWindow):
             # Get all segments
             segments = self.image_view.get_segments()
             
-            # Save XML to output/labels
-            output_xml_path = os.path.join(OUTPUT_LABEL_DIR, base_name + ".xml")
-            self.save_voc_xml(output_xml_path, self.current_image_path, segments)
+            # Save annotations based on configured format
+            if config.EXPORT_FORMAT.lower() == "coco":
+                # COCO format: Save as JSON file
+                output_json_path = os.path.join(OUTPUT_LABEL_DIR, base_name + ".json")
+                self.save_coco_json(output_json_path, self.current_image_path, segments)
+            else:
+                # VOC format: Save as XML file (default)
+                output_xml_path = os.path.join(OUTPUT_LABEL_DIR, base_name + ".xml")
+                self.save_voc_xml(output_xml_path, self.current_image_path, segments)
             
             # Process events before loading next image
             if QApplication.instance() is not None:

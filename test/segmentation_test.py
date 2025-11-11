@@ -1,15 +1,24 @@
 """
-Test script to visualize polygon segmentations from XML annotation files.
+Test script to visualize polygon segmentations from annotation files (VOC XML or COCO JSON).
 Usage: python test/segmentation_test.py <filename>
 Example: python test/segmentation_test.py 00004
+Example: python test/segmentation_test.py 00004 --format coco
 """
 import os
 import sys
 import argparse
 import xml.etree.ElementTree as ET
+import json
 import hashlib
 import cv2
 import numpy as np
+
+# Add project root to Python path for imports
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+from segmentation.sam_utils import rle_to_mask
 
 # Optional matplotlib import for better visualization
 try:
@@ -21,7 +30,7 @@ except ImportError:
 
 
 # Label file path (relative to project root)
-LABEL_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "label.txt")
+LABEL_FILE = os.path.join(project_root, "label.txt")
 
 
 def load_labels_from_file(label_file: str):
@@ -172,6 +181,105 @@ def load_segmentations_from_xml(xml_path):
             polygon_elem = seg_elem.find("polygon")
             if polygon_elem is not None and polygon_elem.text:
                 polygon_points = parse_polygon(polygon_elem.text)
+        
+        # Add to segmentations if we have either polygon or bbox
+        if polygon_points is not None or bbox is not None:
+            segmentations.append((label_name, polygon_points, bbox))
+    
+    return segmentations
+
+
+def mask_to_polygon(mask):
+    """
+    Convert a boolean mask to polygon points using contour detection.
+    
+    Args:
+        mask: Boolean mask array
+        
+    Returns:
+        numpy array of shape (N, 2) with x,y coordinates, or None if no contour found
+    """
+    if mask is None or not mask.any():
+        return None
+    
+    # Convert mask to uint8
+    mask_uint8 = (mask * 255).astype(np.uint8)
+    
+    # Find contours
+    contours, _ = cv2.findContours(mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    if len(contours) == 0:
+        return None
+    
+    # Sort contours by area (largest first) and use only the largest one
+    contours_sorted = sorted(contours, key=cv2.contourArea, reverse=True)
+    main_contour = contours_sorted[0]
+    
+    # Simplify contour if too many points
+    if len(main_contour) >= 3:
+        epsilon = 0.002 * cv2.arcLength(main_contour, True)
+        approx = cv2.approxPolyDP(main_contour, epsilon, True)
+        
+        if len(approx) >= 3:
+            # Reshape to (N, 2) format
+            polygon_points = approx.reshape(-1, 2)
+            return polygon_points.astype(np.int32)
+    
+    return None
+
+
+def load_segmentations_from_coco(json_path):
+    """
+    Load all segmentations and bounding boxes from a COCO JSON file.
+    
+    Args:
+        json_path: Path to COCO JSON annotation file
+        
+    Returns:
+        List of tuples: (label_name, polygon_points, bbox) where:
+            - label_name: string
+            - polygon_points: (N, 2) numpy array or None
+            - bbox: tuple (xmin, ymin, xmax, ymax) or None
+    """
+    if not os.path.exists(json_path):
+        raise FileNotFoundError(f"JSON file not found: {json_path}")
+    
+    with open(json_path, 'r', encoding='utf-8') as f:
+        coco_data = json.load(f)
+    
+    # Create category ID to name mapping
+    category_map = {}
+    for cat in coco_data.get("categories", []):
+        category_map[cat["id"]] = cat["name"]
+    
+    segmentations = []
+    
+    # Process annotations
+    for ann in coco_data.get("annotations", []):
+        category_id = ann.get("category_id")
+        label_name = category_map.get(category_id, "unknown")
+        
+        # Get bounding box (COCO format: [x, y, width, height])
+        bbox_coco = ann.get("bbox")
+        bbox = None
+        if bbox_coco and len(bbox_coco) == 4:
+            x, y, w, h = bbox_coco
+            # Convert to (xmin, ymin, xmax, ymax)
+            bbox = (int(x), int(y), int(x + w), int(y + h))
+        
+        # Get segmentation (RLE format)
+        polygon_points = None
+        seg = ann.get("segmentation")
+        if seg:
+            # Check if it's RLE format (dict with 'size' and 'counts')
+            if isinstance(seg, dict) and "size" in seg and "counts" in seg:
+                try:
+                    # Convert RLE to mask
+                    mask = rle_to_mask(seg)
+                    # Convert mask to polygon
+                    polygon_points = mask_to_polygon(mask)
+                except Exception as e:
+                    print(f"Warning: Could not convert RLE to polygon for annotation {ann.get('id')}: {e}")
         
         # Add to segmentations if we have either polygon or bbox
         if polygon_points is not None or bbox is not None:
@@ -369,19 +477,28 @@ def draw_segmentations_matplotlib(image, segmentations, original_bboxes=None, ou
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Visualize polygon segmentations from XML annotation files",
+        description="Visualize polygon segmentations from annotation files (VOC XML or COCO JSON)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   python test/segmentation_test.py 00004
   python test/segmentation_test.py 00004 --output test_result.jpg
   python test/segmentation_test.py 00004 --backend opencv
+  python test/segmentation_test.py 00004 --format coco
+  python test/segmentation_test.py 00004 --format voc
         """
     )
     parser.add_argument(
         "filename",
         type=str,
-        help="Base filename (without extension) of the image/XML pair in output folder"
+        help="Base filename (without extension) of the image/annotation pair in output folder"
+    )
+    parser.add_argument(
+        "--format",
+        type=str,
+        choices=["auto", "voc", "coco"],
+        default="auto",
+        help="Annotation format (auto: detect from file extension, voc: XML, coco: JSON)"
     )
     parser.add_argument(
         "--output", "-o",
@@ -421,8 +538,33 @@ Examples:
     # Build file paths
     base_name = args.filename
     image_path = os.path.join(args.output_dir, "images", f"{base_name}.jpg")
-    xml_path = os.path.join(args.output_dir, "labels", f"{base_name}.xml")
-    input_xml_path = os.path.join(args.input_dir, "labels", f"{base_name}.xml")
+    
+    # Determine annotation format
+    annotation_path = None
+    format_type = args.format
+    
+    if format_type == "auto":
+        # Try to detect format by checking which file exists
+        xml_path = os.path.join(args.output_dir, "labels", f"{base_name}.xml")
+        json_path = os.path.join(args.output_dir, "labels", f"{base_name}.json")
+        
+        if os.path.exists(xml_path):
+            annotation_path = xml_path
+            format_type = "voc"
+        elif os.path.exists(json_path):
+            annotation_path = json_path
+            format_type = "coco"
+        else:
+            print(f"Error: No annotation file found for {base_name}")
+            print(f"Checked: {xml_path}")
+            print(f"Checked: {json_path}")
+            sys.exit(1)
+    else:
+        # Use specified format
+        if format_type == "voc":
+            annotation_path = os.path.join(args.output_dir, "labels", f"{base_name}.xml")
+        elif format_type == "coco":
+            annotation_path = os.path.join(args.output_dir, "labels", f"{base_name}.json")
     
     # Check if files exist
     if not os.path.exists(image_path):
@@ -435,8 +577,8 @@ Examples:
                     print(f"  - {os.path.splitext(f)[0]}")
         sys.exit(1)
     
-    if not os.path.exists(xml_path):
-        print(f"Error: XML file not found: {xml_path}")
+    if not os.path.exists(annotation_path):
+        print(f"Error: Annotation file not found: {annotation_path}")
         sys.exit(1)
     
     # Load image
@@ -446,10 +588,16 @@ Examples:
         print(f"Error: Failed to load image from {image_path}")
         sys.exit(1)
     
-    # Load segmentations
-    print(f"Loading segmentations from: {xml_path}")
+    # Load segmentations based on format
+    print(f"Loading segmentations from: {annotation_path} (format: {format_type.upper()})")
     try:
-        segmentations = load_segmentations_from_xml(xml_path)
+        if format_type == "voc":
+            segmentations = load_segmentations_from_xml(annotation_path)
+        elif format_type == "coco":
+            segmentations = load_segmentations_from_coco(annotation_path)
+        else:
+            raise ValueError(f"Unknown format: {format_type}")
+        
         print(f"Found {len(segmentations)} segmentations:")
         for i, (label, points, bbox) in enumerate(segmentations, 1):
             polygon_info = f"{len(points)} points" if points is not None else "no polygon"
@@ -457,24 +605,28 @@ Examples:
             print(f"  {i}. {label}: {polygon_info}, {bbox_info}")
     except Exception as e:
         print(f"Error loading segmentations: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
     
     if len(segmentations) == 0:
-        print("Warning: No segmentations found in XML file")
+        print("Warning: No segmentations found in annotation file")
         return
     
-    # Load original bounding boxes from input XML if available
+    # Load original bounding boxes from input XML if available (only for VOC format)
     original_bboxes = []
-    if args.show_original_bbox and os.path.exists(input_xml_path):
-        print(f"\nLoading original bounding boxes from: {input_xml_path}")
-        try:
-            input_segmentations = load_segmentations_from_xml(input_xml_path)
-            for label, points, bbox in input_segmentations:
-                if bbox is not None:
-                    original_bboxes.append(bbox)
-                    print(f"  Original bbox: {bbox} ({label})")
-        except Exception as e:
-            print(f"Warning: Could not load original bounding boxes: {e}")
+    if args.show_original_bbox:
+        input_xml_path = os.path.join(args.input_dir, "labels", f"{base_name}.xml")
+        if os.path.exists(input_xml_path):
+            print(f"\nLoading original bounding boxes from: {input_xml_path}")
+            try:
+                input_segmentations = load_segmentations_from_xml(input_xml_path)
+                for label, points, bbox in input_segmentations:
+                    if bbox is not None:
+                        original_bboxes.append(bbox)
+                        print(f"  Original bbox: {bbox} ({label})")
+            except Exception as e:
+                print(f"Warning: Could not load original bounding boxes: {e}")
     
     # Load color palette from label file
     color_palette = load_color_palette(LABEL_FILE)

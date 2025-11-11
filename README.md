@@ -9,7 +9,7 @@ A graphical annotation tool for image segmentation using Meta's Segment Anything
 - **Multi-category Support**: Organize segments by customizable labels loaded from a configuration file
 - **Dynamic Label System**: Labels are loaded from `label.txt` with automatically generated colors
 - **Enhanced Undo System**: Undo brush strokes, point additions, and segment deletions with confirmation dialogs
-- **COCO Export**: Export annotations in COCO format for machine learning pipelines
+- **Flexible Export Formats**: Export annotations in VOC (Pascal VOC XML) or COCO (JSON) format, configurable via `config.py`
 
 ## Installation
 
@@ -33,12 +33,17 @@ pip install -r requirements.txt
    - Edit `label.txt` to add your label categories (one label per line)
    - Example `label.txt`:
      ```
-     rotor
-     camera
-     frame
-     other
+     cat
+     dog
+     car
      ```
    - **Note**: `label.txt` is in `.gitignore` and won't be committed to the repository. Use `label_example.txt` as a template.
+
+5. Configure export format (optional):
+   - Edit `config.py` to set your preferred export format
+   - Set `EXPORT_FORMAT = "voc"` for Pascal VOC XML format
+   - Set `EXPORT_FORMAT = "coco"` for COCO JSON format
+   - See the [Configuration](#configuration) section for more details
 
 ## Usage
 
@@ -61,8 +66,43 @@ python main.py
    - Save annotations
 
 5. Annotated images and labels will be saved to `output/` folder
+   - Images are saved to `output/images/`
+   - Annotations are saved to `output/labels/` in the format specified in `config.py`
+   - VOC format: `.xml` files (Pascal VOC format)
+   - COCO format: `.json` files (COCO format)
 
-## Label Configuration
+## Configuration
+
+### Export Format Configuration
+
+The application supports two export formats, configurable via `config.py`:
+
+**File Location**: `config.py` in the project root directory
+
+**Settings**:
+- `EXPORT_FORMAT`: Set to `"voc"` or `"coco"` to choose the output format
+- `COCO_CATEGORIES`: Optional list of category names for COCO export. If `None`, categories are automatically loaded from `label.txt`
+
+**Example `config.py`**:
+```python
+# Export format: "voc" or "coco"
+EXPORT_FORMAT = "voc"  # Change to "coco" to export in COCO format
+
+# COCO export settings (only used when EXPORT_FORMAT = "coco")
+COCO_CATEGORIES = None  # Set to None to auto-load from label.txt
+```
+
+**Export Formats**:
+- **VOC Format** (Pascal VOC XML): 
+  - Output: `.xml` files in `output/labels/`
+  - Includes bounding boxes and polygon segmentations
+  - Compatible with many computer vision tools
+- **COCO Format** (JSON):
+  - Output: `.json` files in `output/labels/`
+  - Includes RLE (Run-Length Encoded) segmentations and bounding boxes
+  - Standard format for many deep learning frameworks
+
+### Label Configuration
 
 The application uses a simple text file (`label.txt`) to define the available label categories. Each line in the file represents one label category.
 
@@ -77,26 +117,19 @@ The project includes a test script for visualizing segmentation annotations:
 
 ### `test/segmentation_test.py`
 
-This script allows you to visualize polygon segmentations from XML annotation files. It's useful for:
+This script allows you to visualize polygon segmentations from annotation files (VOC XML or COCO JSON). It's useful for:
 - Verifying annotation quality
 - Debugging annotation issues
 - Viewing segmentation overlays on images
 
 **Usage**:
 ```bash
-python test/segmentation_test.py <filename>
+python test/segmentation_test.py <filename> [options]
 ```
 
 **Important**: Provide only the filename without the extension. For example:
-- If your files are `00004.jpg` and `00004.xml`, use: `python test/segmentation_test.py 00004`
-- Do not include `.jpg`, `.xml`, or any other file extension
-
-**Examples**:
-```bash
-# Visualize annotations for image 00004 (files: 00004.jpg and 00004.xml)
-python test/segmentation_test.py 00004
-
-```
+- If your files are `00004.jpg` and `00004.xml` (or `00004.json`), use: `python test/segmentation_test.py 00004`
+- Do not include `.jpg`, `.xml`, `.json`, or any other file extension
 
 ## Keyboard Shortcuts
 
