@@ -32,7 +32,8 @@ SAM_MODEL_TYPE = "vit_b"
 IMG_DIR = r"input\images"  # Images from input/images folder
 LABEL_DIR = r"input\labels"  # Labels (XML files) from input/labels folder
 OUTPUT_IMG_DIR = r"output\images"  # Output images folder
-OUTPUT_LABEL_DIR = r"output\labels"  # Output labels folder
+OUTPUT_LABEL_DIR = r"output\segment_labels"  # Output segment labels folder
+OUTPUT_BB_LABEL_DIR = r"output\bb_labels"  # Output bounding box labels folder
 CLIP_TO_XML_BOX = True
 # Label file path (relative to project root)
 LABEL_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "label.txt")
@@ -141,10 +142,12 @@ def ensure_output_directories():
     """
     os.makedirs(OUTPUT_IMG_DIR, exist_ok=True)
     os.makedirs(OUTPUT_LABEL_DIR, exist_ok=True)
+    os.makedirs(OUTPUT_BB_LABEL_DIR, exist_ok=True)
     
-    # Create .gitkeep files in both directories
+    # Create .gitkeep files in all directories
     gitkeep_img = os.path.join(OUTPUT_IMG_DIR, ".gitkeep")
     gitkeep_label = os.path.join(OUTPUT_LABEL_DIR, ".gitkeep")
+    gitkeep_bb_label = os.path.join(OUTPUT_BB_LABEL_DIR, ".gitkeep")
     
     # Only create if they don't exist to avoid unnecessary file writes
     if not os.path.exists(gitkeep_img):
@@ -152,6 +155,9 @@ def ensure_output_directories():
             pass  # Create empty file
     if not os.path.exists(gitkeep_label):
         with open(gitkeep_label, 'w') as f:
+            pass  # Create empty file
+    if not os.path.exists(gitkeep_bb_label):
+        with open(gitkeep_bb_label, 'w') as f:
             pass  # Create empty file
 
 
@@ -266,7 +272,28 @@ class MainWindow(QMainWindow):
         keybinds_frame.setStyleSheet(f"background-color: {ITEM_BG};")
         keybinds_layout = QVBoxLayout(keybinds_frame)
         keybinds_layout.setContentsMargins(0, 0, 0, 0)
-        self.keybinds_bar = KeybindsBar()
+        
+        # Build keybinds list based on configuration
+        keybinds = [
+            {"key": "A", "label": "Segment tool"},
+            {"key": "S", "label": "Brush tool"},
+        ]
+        # Add bounding box tool keybind if BOUNDING_BOX_EXISTS is False
+        if not config.BOUNDING_BOX_EXISTS:
+            keybinds.append({"key": "B", "label": "Bounding box tool"})
+        keybinds.extend([
+            {"key": "Space", "label": "Pan tool"},
+            {"key": "F", "label": "Fit to bounding box"},
+            {"key": "E", "label": "Finalize segment"},
+            {"key": "H", "label": "Highlight current segment"},
+            {"key": "Z", "label": "Undo"},
+            {"key": "Ctrl+S", "label": "Save & next image"},
+            {"key": "N", "label": "Skip image"},
+            {"key": "Scroll", "label": "Zoom"},
+            {"key": "Q", "label": "Quit"},
+        ])
+        
+        self.keybinds_bar = KeybindsBar(keybinds=keybinds)
         # Set labels on keybind bar (labels are already initialized at this point)
         self.keybinds_bar.set_labels(self.labels)
         keybinds_layout.addWidget(self.keybinds_bar)
@@ -353,7 +380,7 @@ class MainWindow(QMainWindow):
         
         # Find corresponding XML file in input/labels folder
         xml_path = None
-        if CLIP_TO_XML_BOX:
+        if config.BOUNDING_BOX_EXISTS and CLIP_TO_XML_BOX:
             # Get base name without extension
             base_name = os.path.splitext(os.path.basename(img_path))[0]
             
@@ -369,6 +396,8 @@ class MainWindow(QMainWindow):
                 xml_path = None
             else:
                 print(f"Found label file: {xml_path}")
+        elif not config.BOUNDING_BOX_EXISTS:
+            print("BOUNDING_BOX_EXISTS is False - skipping XML file lookup")
         
         try:
             # Check if we have a preloaded embedding ready for this image
@@ -542,6 +571,11 @@ class MainWindow(QMainWindow):
         # F - Fit to bounding box
         shortcut_f = QShortcut(QKeySequence("F"), self)
         shortcut_f.activated.connect(lambda: self.select_tool("fit_bbox"))
+        
+        # B - Bounding box tool (only when BOUNDING_BOX_EXISTS is False)
+        if not config.BOUNDING_BOX_EXISTS:
+            shortcut_b = QShortcut(QKeySequence("B"), self)
+            shortcut_b.activated.connect(lambda: self.select_tool("bbox"))
         
         # Ctrl+S - Save and next image
         shortcut_save = QShortcut(QKeySequence("Ctrl+S"), self)
@@ -970,6 +1004,159 @@ class MainWindow(QMainWindow):
         
         return True
     
+    def save_voc_bbox(self, xml_path: str, image_path: str, bbox: Tuple[int, int, int, int], label_name: str):
+        """
+        Save bounding box as VOC XML annotation file
+        
+        Args:
+            xml_path: Path to save XML file
+            image_path: Path to image file
+            bbox: Tuple (xmin, ymin, xmax, ymax)
+            label_name: Label name for the bounding box
+        """
+        # Get image dimensions
+        if hasattr(self.image_view, 'base_image') and self.image_view.base_image is not None:
+            h, w = self.image_view.base_image.shape[:2]
+        else:
+            img = cv2.imread(image_path)
+            if img is None:
+                return False
+            h, w = img.shape[:2]
+        
+        xmin, ymin, xmax, ymax = bbox
+        
+        # Create XML root
+        root = ET.Element("annotation")
+        
+        # Folder
+        folder_elem = ET.SubElement(root, "folder")
+        folder_elem.text = "images"
+        
+        # Filename
+        filename_elem = ET.SubElement(root, "filename")
+        filename_elem.text = os.path.basename(image_path)
+        
+        # Path
+        path_elem = ET.SubElement(root, "path")
+        path_elem.text = image_path
+        
+        # Source
+        source_elem = ET.SubElement(root, "source")
+        database_elem = ET.SubElement(source_elem, "database")
+        database_elem.text = "SAM Annotator"
+        
+        # Size
+        size_elem = ET.SubElement(root, "size")
+        width_elem = ET.SubElement(size_elem, "width")
+        width_elem.text = str(w)
+        height_elem = ET.SubElement(size_elem, "height")
+        height_elem.text = str(h)
+        depth_elem = ET.SubElement(size_elem, "depth")
+        depth_elem.text = "3"
+        
+        # Segmented
+        segmented_elem = ET.SubElement(root, "segmented")
+        segmented_elem.text = "0"
+        
+        # Object with bounding box
+        obj_elem = ET.SubElement(root, "object")
+        
+        name_elem = ET.SubElement(obj_elem, "name")
+        name_elem.text = label_name
+        
+        pose_elem = ET.SubElement(obj_elem, "pose")
+        pose_elem.text = "Unspecified"
+        
+        truncated_elem = ET.SubElement(obj_elem, "truncated")
+        truncated_elem.text = "0"
+        
+        difficult_elem = ET.SubElement(obj_elem, "difficult")
+        difficult_elem.text = "0"
+        
+        # Bounding box
+        bndbox_elem = ET.SubElement(obj_elem, "bndbox")
+        xmin_elem = ET.SubElement(bndbox_elem, "xmin")
+        xmin_elem.text = str(max(0, min(w - 1, xmin)))
+        ymin_elem = ET.SubElement(bndbox_elem, "ymin")
+        ymin_elem.text = str(max(0, min(h - 1, ymin)))
+        xmax_elem = ET.SubElement(bndbox_elem, "xmax")
+        xmax_elem.text = str(max(0, min(w - 1, xmax)))
+        ymax_elem = ET.SubElement(bndbox_elem, "ymax")
+        ymax_elem.text = str(max(0, min(h - 1, ymax)))
+        
+        # Create output directory if needed
+        os.makedirs(os.path.dirname(xml_path), exist_ok=True)
+        
+        # Write XML file with proper formatting
+        tree = ET.ElementTree(root)
+        ET.indent(tree, space="\t", level=0)
+        tree.write(xml_path, encoding="utf-8", xml_declaration=True)
+        
+        print(f"✅ Saved VOC bounding box to {xml_path}")
+        return True
+    
+    def save_coco_bbox(self, json_path: str, image_path: str, bbox: Tuple[int, int, int, int], label_name: str):
+        """
+        Save bounding box as COCO JSON annotation file
+        
+        Args:
+            json_path: Path to save JSON file
+            image_path: Path to image file
+            bbox: Tuple (xmin, ymin, xmax, ymax)
+            label_name: Label name for the bounding box
+        """
+        # Get image dimensions
+        if hasattr(self.image_view, 'base_image') and self.image_view.base_image is not None:
+            h, w = self.image_view.base_image.shape[:2]
+        else:
+            img = cv2.imread(image_path)
+            if img is None:
+                return False
+            h, w = img.shape[:2]
+        
+        xmin, ymin, xmax, ymax = bbox
+        
+        # Calculate COCO bbox format: [x, y, width, height] (top-left corner + size)
+        bbox_width = xmax - xmin
+        bbox_height = ymax - ymin
+        coco_bbox = [xmin, ymin, bbox_width, bbox_height]
+        
+        # Create COCO exporter with just the bounding box label
+        categories = [label_name]
+        exporter = COCOExporter(categories)
+        
+        # Add image
+        base_name = os.path.splitext(os.path.basename(image_path))[0]
+        image_id = 1  # For per-image COCO files, we use 1
+        exporter.add_image(
+            image_id=image_id,
+            file_path=image_path,
+            width=w,
+            height=h,
+            output_dir=os.path.dirname(json_path)
+        )
+        
+        # Add bounding box annotation (without segmentation mask)
+        # We need to manually add the annotation since add_annotation expects a mask
+        category_id = 1  # First category
+        area = float(bbox_width * bbox_height)
+        
+        exporter.annotations_json.append({
+            "id": exporter.ann_id,
+            "image_id": image_id,
+            "category_id": category_id,
+            "segmentation": [],  # No segmentation for bounding box only
+            "area": area,
+            "bbox": coco_bbox,
+            "iscrowd": 0
+        })
+        exporter.ann_id += 1
+        
+        # Export JSON file
+        exporter.export(json_path)
+        
+        return True
+    
     def skip_image(self):
         """Skip current image and move to next without creating output files"""
         if self.current_image_path is None:
@@ -1039,6 +1226,20 @@ class MainWindow(QMainWindow):
                 # VOC format: Save as XML file (default)
                 output_xml_path = os.path.join(OUTPUT_LABEL_DIR, base_name + ".xml")
                 self.save_voc_xml(output_xml_path, self.current_image_path, segments)
+            
+            # Save bounding box if it exists
+            if self.image_view.bounding_box is not None:
+                bbox = self.image_view.bounding_box
+                bb_label_name = config.BB_LABEL
+                
+                if config.EXPORT_FORMAT.lower() == "coco":
+                    # COCO format: Save as JSON file
+                    output_bb_json_path = os.path.join(OUTPUT_BB_LABEL_DIR, base_name + ".json")
+                    self.save_coco_bbox(output_bb_json_path, self.current_image_path, bbox, bb_label_name)
+                else:
+                    # VOC format: Save as XML file (default)
+                    output_bb_xml_path = os.path.join(OUTPUT_BB_LABEL_DIR, base_name + ".xml")
+                    self.save_voc_bbox(output_bb_xml_path, self.current_image_path, bbox, bb_label_name)
             
             # Process events before loading next image
             if QApplication.instance() is not None:

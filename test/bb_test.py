@@ -1,9 +1,9 @@
 """
-Test script to visualize polygon segmentations from annotation files (VOC XML or COCO JSON).
-Reads segmentations from output/segment_labels folder and displays them with images from output/images.
-Usage: python test/segmentation_test.py <filename>
-Example: python test/segmentation_test.py 00004
-Example: python test/segmentation_test.py 00004 --format coco
+Test script to visualize bounding boxes from annotation files (VOC XML or COCO JSON).
+Reads bounding boxes from output/bb_labels folder and displays them with images from output/images.
+Usage: python test/bb_test.py <filename>
+Example: python test/bb_test.py 00004
+Example: python test/bb_test.py 00004 --format coco
 """
 import os
 import sys
@@ -135,9 +135,9 @@ def parse_polygon(polygon_str):
     return np.array(points, dtype=np.int32)
 
 
-def load_segmentations_from_xml(xml_path):
+def load_bboxes_from_xml(xml_path):
     """
-    Load all polygon segmentations and bounding boxes from a VOC XML file.
+    Load all bounding boxes from a VOC XML file.
     
     Args:
         xml_path: Path to XML annotation file
@@ -145,7 +145,7 @@ def load_segmentations_from_xml(xml_path):
     Returns:
         List of tuples: (label_name, polygon_points, bbox) where:
             - label_name: string
-            - polygon_points: (N, 2) numpy array or None
+            - polygon_points: None (bounding boxes don't have polygons)
             - bbox: tuple (xmin, ymin, xmax, ymax) or None
     """
     if not os.path.exists(xml_path):
@@ -154,7 +154,7 @@ def load_segmentations_from_xml(xml_path):
     tree = ET.parse(xml_path)
     root = tree.getroot()
     
-    segmentations = []
+    bboxes = []
     
     # Find all object elements
     for obj in root.findall("object"):
@@ -175,19 +175,14 @@ def load_segmentations_from_xml(xml_path):
             except (ValueError, AttributeError):
                 bbox = None
         
-        # Get segmentation polygon
+        # Bounding boxes don't have polygons
         polygon_points = None
-        seg_elem = obj.find("segmentation")
-        if seg_elem is not None:
-            polygon_elem = seg_elem.find("polygon")
-            if polygon_elem is not None and polygon_elem.text:
-                polygon_points = parse_polygon(polygon_elem.text)
         
-        # Add to segmentations if we have either polygon or bbox
-        if polygon_points is not None or bbox is not None:
-            segmentations.append((label_name, polygon_points, bbox))
+        # Add to bboxes if we have a bounding box
+        if bbox is not None:
+            bboxes.append((label_name, polygon_points, bbox))
     
-    return segmentations
+    return bboxes
 
 
 def mask_to_polygon(mask):
@@ -229,9 +224,9 @@ def mask_to_polygon(mask):
     return None
 
 
-def load_segmentations_from_coco(json_path):
+def load_bboxes_from_coco(json_path):
     """
-    Load all segmentations and bounding boxes from a COCO JSON file.
+    Load all bounding boxes from a COCO JSON file.
     
     Args:
         json_path: Path to COCO JSON annotation file
@@ -239,7 +234,7 @@ def load_segmentations_from_coco(json_path):
     Returns:
         List of tuples: (label_name, polygon_points, bbox) where:
             - label_name: string
-            - polygon_points: (N, 2) numpy array or None
+            - polygon_points: None (bounding boxes don't have polygons)
             - bbox: tuple (xmin, ymin, xmax, ymax) or None
     """
     if not os.path.exists(json_path):
@@ -253,7 +248,7 @@ def load_segmentations_from_coco(json_path):
     for cat in coco_data.get("categories", []):
         category_map[cat["id"]] = cat["name"]
     
-    segmentations = []
+    bboxes = []
     
     # Process annotations
     for ann in coco_data.get("annotations", []):
@@ -268,34 +263,23 @@ def load_segmentations_from_coco(json_path):
             # Convert to (xmin, ymin, xmax, ymax)
             bbox = (int(x), int(y), int(x + w), int(y + h))
         
-        # Get segmentation (RLE format)
+        # Bounding boxes don't have polygons
         polygon_points = None
-        seg = ann.get("segmentation")
-        if seg:
-            # Check if it's RLE format (dict with 'size' and 'counts')
-            if isinstance(seg, dict) and "size" in seg and "counts" in seg:
-                try:
-                    # Convert RLE to mask
-                    mask = rle_to_mask(seg)
-                    # Convert mask to polygon
-                    polygon_points = mask_to_polygon(mask)
-                except Exception as e:
-                    print(f"Warning: Could not convert RLE to polygon for annotation {ann.get('id')}: {e}")
         
-        # Add to segmentations if we have either polygon or bbox
-        if polygon_points is not None or bbox is not None:
-            segmentations.append((label_name, polygon_points, bbox))
+        # Add to bboxes if we have a bounding box
+        if bbox is not None:
+            bboxes.append((label_name, polygon_points, bbox))
     
-    return segmentations
+    return bboxes
 
 
-def draw_segmentations_opencv(image, segmentations, output_path=None, color_palette=None):
+def draw_bboxes_opencv(image, bboxes, output_path=None, color_palette=None):
     """
-    Draw polygon segmentations and bounding boxes on image using OpenCV.
+    Draw bounding boxes on image using OpenCV.
     
     Args:
         image: Input image (BGR format)
-        segmentations: List of (label_name, polygon_points, bbox) tuples
+        bboxes: List of (label_name, polygon_points, bbox) tuples
         output_path: Optional path to save the result image
         color_palette: Dict mapping label names to RGB tuples
     """
@@ -304,33 +288,21 @@ def draw_segmentations_opencv(image, segmentations, output_path=None, color_pale
     
     img = image.copy()
     
-    for label_name, polygon_points, bbox in segmentations:
+    for label_name, polygon_points, bbox in bboxes:
         # Get color for this label (RGB format)
         color_rgb = color_palette.get(label_name.lower(), color_palette["default"])
         # Convert RGB to BGR for OpenCV
         color = (color_rgb[2], color_rgb[1], color_rgb[0])
         
-        # Draw polygon if available
-        if polygon_points is not None:
-            # Draw filled polygon with transparency
-            overlay = img.copy()
-            cv2.fillPoly(overlay, [polygon_points], color)
-            cv2.addWeighted(overlay, 0.4, img, 0.6, 0, img)
-            
-            # Draw polygon outline
-            cv2.polylines(img, [polygon_points], isClosed=True, color=color, thickness=2)
-        
         # Draw bounding box if available
         if bbox is not None:
             xmin, ymin, xmax, ymax = bbox
-            # Draw bounding box rectangle with thicker line to distinguish from polygon
+            # Draw bounding box rectangle
             cv2.rectangle(img, (xmin, ymin), (xmax, ymax), color, 3)
         
-        # Add label text at top-left of bounding box or first polygon point
+        # Add label text at top-left of bounding box
         if bbox is not None:
             x, y = bbox[0], bbox[1]
-        elif polygon_points is not None and len(polygon_points) > 0:
-            x, y = polygon_points[0]
         else:
             continue
         
@@ -342,7 +314,7 @@ def draw_segmentations_opencv(image, segmentations, output_path=None, color_pale
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
     
     # Display image
-    cv2.imshow("Segmentation Test", img)
+    cv2.imshow("Bounding Box Test", img)
     print("Press any key to close the window...")
     cv2.waitKey(0)
     cv2.destroyAllWindows()
@@ -353,13 +325,13 @@ def draw_segmentations_opencv(image, segmentations, output_path=None, color_pale
         print(f"Saved result to: {output_path}")
 
 
-def draw_segmentations_matplotlib(image, segmentations, output_path=None, color_palette=None):
+def draw_bboxes_matplotlib(image, bboxes, output_path=None, color_palette=None):
     """
-    Draw polygon segmentations and bounding boxes on image using Matplotlib.
+    Draw bounding boxes on image using Matplotlib.
     
     Args:
         image: Input image (BGR format, will be converted to RGB)
-        segmentations: List of (label_name, polygon_points, bbox) tuples
+        bboxes: List of (label_name, polygon_points, bbox) tuples
         output_path: Optional path to save the result image
         color_palette: Dict mapping label names to RGB tuples
     """
@@ -379,37 +351,27 @@ def draw_segmentations_matplotlib(image, segmentations, output_path=None, color_
     
     fig, ax = plt.subplots(1, 1, figsize=(12, 8))
     ax.imshow(img_rgb)
-    ax.set_title("Segmentation Visualization", fontsize=14, fontweight='bold')
+    ax.set_title("Bounding Box Visualization", fontsize=14, fontweight='bold')
     
-    for label_name, polygon_points, bbox in segmentations:
+    for label_name, polygon_points, bbox in bboxes:
         # Get color for this label (already in RGB format)
         color_rgb_int = color_palette.get(label_name.lower(), color_palette["default"])
         color_rgb = (color_rgb_int[0] / 255.0, color_rgb_int[1] / 255.0, color_rgb_int[2] / 255.0)
-        
-        # Draw polygon if available
-        if polygon_points is not None:
-            # Create polygon patch
-            polygon = Polygon(polygon_points, closed=True, 
-                            facecolor=color_rgb, edgecolor=color_rgb, 
-                            alpha=0.4, linewidth=2)
-            ax.add_patch(polygon)
         
         # Draw bounding box if available
         if bbox is not None:
             xmin, ymin, xmax, ymax = bbox
             width = xmax - xmin
             height = ymax - ymin
-            # Draw bounding box rectangle with dashed style
+            # Draw bounding box rectangle
             bbox_rect = Rectangle((xmin, ymin), width, height,
                                  linewidth=2, edgecolor=color_rgb, 
-                                 facecolor='none', linestyle='--', alpha=0.8)
+                                 facecolor='none', linestyle='-', alpha=0.8)
             ax.add_patch(bbox_rect)
         
-        # Add label text at top-left of bounding box or first polygon point
+        # Add label text at top-left of bounding box
         if bbox is not None:
             x, y = bbox[0], bbox[1]
-        elif polygon_points is not None and len(polygon_points) > 0:
-            x, y = polygon_points[0]
         else:
             continue
         
@@ -431,21 +393,21 @@ def draw_segmentations_matplotlib(image, segmentations, output_path=None, color_
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Visualize polygon segmentations from annotation files in output/segment_labels (VOC XML or COCO JSON)",
+        description="Visualize bounding boxes from annotation files in output/bb_labels (VOC XML or COCO JSON)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python test/segmentation_test.py 00004
-  python test/segmentation_test.py 00004 --output test_result.jpg
-  python test/segmentation_test.py 00004 --backend opencv
-  python test/segmentation_test.py 00004 --format coco
-  python test/segmentation_test.py 00004 --format voc
+  python test/bb_test.py 00004
+  python test/bb_test.py 00004 --output test_result.jpg
+  python test/bb_test.py 00004 --backend opencv
+  python test/bb_test.py 00004 --format coco
+  python test/bb_test.py 00004 --format voc
         """
     )
     parser.add_argument(
         "filename",
         type=str,
-        help="Base filename (without extension) of the image/annotation pair. Image from output/images, annotation from output/segment_labels"
+        help="Base filename (without extension) of the image/annotation pair. Image from output/images, annotation from output/bb_labels"
     )
     parser.add_argument(
         "--format",
@@ -472,7 +434,7 @@ Examples:
         "--output-dir",
         type=str,
         default="output",
-        help="Directory containing images and segment_labels folders (default: output)"
+        help="Directory containing images and bb_labels folders (default: output)"
     )
     
     args = parser.parse_args()
@@ -487,8 +449,8 @@ Examples:
     
     if format_type == "auto":
         # Try to detect format by checking which file exists
-        xml_path = os.path.join(args.output_dir, "segment_labels", f"{base_name}.xml")
-        json_path = os.path.join(args.output_dir, "segment_labels", f"{base_name}.json")
+        xml_path = os.path.join(args.output_dir, "bb_labels", f"{base_name}.xml")
+        json_path = os.path.join(args.output_dir, "bb_labels", f"{base_name}.json")
         
         if os.path.exists(xml_path):
             annotation_path = xml_path
@@ -504,9 +466,9 @@ Examples:
     else:
         # Use specified format
         if format_type == "voc":
-            annotation_path = os.path.join(args.output_dir, "segment_labels", f"{base_name}.xml")
+            annotation_path = os.path.join(args.output_dir, "bb_labels", f"{base_name}.xml")
         elif format_type == "coco":
-            annotation_path = os.path.join(args.output_dir, "segment_labels", f"{base_name}.json")
+            annotation_path = os.path.join(args.output_dir, "bb_labels", f"{base_name}.json")
     
     # Check if files exist
     if not os.path.exists(image_path):
@@ -530,29 +492,28 @@ Examples:
         print(f"Error: Failed to load image from {image_path}")
         sys.exit(1)
     
-    # Load segmentations based on format
-    print(f"Loading segmentations from: {annotation_path} (format: {format_type.upper()})")
+    # Load bounding boxes based on format
+    print(f"Loading bounding boxes from: {annotation_path} (format: {format_type.upper()})")
     try:
         if format_type == "voc":
-            segmentations = load_segmentations_from_xml(annotation_path)
+            bboxes = load_bboxes_from_xml(annotation_path)
         elif format_type == "coco":
-            segmentations = load_segmentations_from_coco(annotation_path)
+            bboxes = load_bboxes_from_coco(annotation_path)
         else:
             raise ValueError(f"Unknown format: {format_type}")
         
-        print(f"Found {len(segmentations)} segmentations:")
-        for i, (label, points, bbox) in enumerate(segmentations, 1):
-            polygon_info = f"{len(points)} points" if points is not None else "no polygon"
+        print(f"Found {len(bboxes)} bounding box(es):")
+        for i, (label, points, bbox) in enumerate(bboxes, 1):
             bbox_info = f"bbox: {bbox}" if bbox is not None else "no bbox"
-            print(f"  {i}. {label}: {polygon_info}, {bbox_info}")
+            print(f"  {i}. {label}: {bbox_info}")
     except Exception as e:
-        print(f"Error loading segmentations: {e}")
+        print(f"Error loading bounding boxes: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
     
-    if len(segmentations) == 0:
-        print("Warning: No segmentations found in annotation file")
+    if len(bboxes) == 0:
+        print("Warning: No bounding boxes found in annotation file")
         return
     
     # Load color palette from label file
@@ -562,13 +523,13 @@ Examples:
     # Draw and display
     print(f"\nDisplaying visualization using {args.backend} backend...")
     if args.backend == "opencv":
-        draw_segmentations_opencv(image, segmentations, args.output, color_palette)
+        draw_bboxes_opencv(image, bboxes, args.output, color_palette)
     else:
         if not HAS_MATPLOTLIB:
             print("Warning: matplotlib not available, falling back to opencv backend")
-            draw_segmentations_opencv(image, segmentations, args.output, color_palette)
+            draw_bboxes_opencv(image, bboxes, args.output, color_palette)
         else:
-            draw_segmentations_matplotlib(image, segmentations, args.output, color_palette)
+            draw_bboxes_matplotlib(image, bboxes, args.output, color_palette)
     
     print("Done!")
 
