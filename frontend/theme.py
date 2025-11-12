@@ -25,10 +25,6 @@ PRIMARY_HOVER = "#2563eb"
 PRIMARY_PRESSED = "#1d4ed8"
 
 
-
-
-
-
 def get_main_window_style():
     """Get style sheet for main window"""
     return f"""
@@ -119,7 +115,3 @@ def get_combo_box_style():
             selection-background-color: {ITEM_BORDER};
         }}
     """
-
-
-
-
