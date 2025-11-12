@@ -142,25 +142,71 @@ The application uses a simple text file (`label.txt`) to define the available la
 - **Color Assignment**: Colors are automatically generated deterministically based on the label name, ensuring consistency across sessions
 - **Example**: See `label_example.txt` for a sample label configuration
 
-## Visualization Tool
+## Visualization Tools
 
-The project includes a test script for visualizing segmentation annotations:
+The project includes two test scripts for visualizing annotations:
 
 ### `test/segmentation_test.py`
 
-This script allows you to visualize polygon segmentations from annotation files (VOC XML or COCO JSON). It's useful for:
-- Verifying annotation quality
-- Debugging annotation issues
-- Viewing segmentation overlays on images
+This script visualizes polygon segmentations from annotation files (VOC XML or COCO JSON). It's useful for:
+- Verifying segmentation annotation quality
+- Debugging segmentation issues
+- Viewing polygon segmentation overlays on images
+- Checking that segmentations match their corresponding bounding boxes
 
 **Usage**:
 ```bash
 python test/segmentation_test.py <filename> [options]
 ```
 
-**Important**: Provide only the filename without the extension. For example:
-- If your files are `00004.jpg` and `00004.xml` (or `00004.json`), use: `python test/segmentation_test.py 00004`
-- Do not include `.jpg`, `.xml`, `.json`, or any other file extension
+**Arguments**:
+- `<filename>`: Base filename (without extension) of the image/annotation pair
+  - Image is loaded from `output/images/<filename>.jpg`
+  - Annotation is loaded from `output/segment_labels/<filename>.xml` or `.json`
+  - **Important**: Provide only the filename without the extension (e.g., `00004`, not `00004.xml`)
+
+**Examples**:
+```bash
+# Basic usage (auto-detect format)
+python test/segmentation_test.py 00004
+```
+
+**Features**:
+- Displays polygon segmentations with semi-transparent fill and colored outlines
+- Shows bounding boxes (if present) with dashed lines
+- Labels each segmentation with its category name
+- Uses consistent colors from `label.txt` for each category
+- Supports both VOC (XML) and COCO (JSON) formats
+
+### `test/bb_test.py`
+
+This script visualizes bounding boxes from annotation files (VOC XML or COCO JSON). It's useful for:
+- Verifying bounding box annotation quality
+- Debugging bounding box issues
+- Viewing bounding box overlays on images
+- Checking bounding box coordinates and labels
+
+**Usage**:
+```bash
+python test/bb_test.py <filename> [options]
+```
+
+**Arguments**:
+- `<filename>`: Base filename (without extension) of the image/annotation pair
+  - Image is loaded from `output/images/<filename>.jpg`
+  - Annotation is loaded from `output/bb_labels/<filename>.xml` or `.json`
+  - **Important**: Provide only the filename without the extension (e.g., `00004`, not `00004.xml`)
+
+**Examples**:
+```bash
+python test/bb_test.py 00004
+```
+
+**Features**:
+- Displays bounding boxes with colored rectangles
+- Labels each bounding box with its category name
+- Uses consistent colors from `label.txt` for each category
+- Supports both VOC (XML) and COCO (JSON) formats
 
 ## Keyboard Shortcuts
 
