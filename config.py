@@ -4,10 +4,10 @@ Users can specify export format and other settings here
 """
 
 # Export format: "voc" or "coco"
-EXPORT_FORMAT = "coco"  
+EXPORT_FORMAT = "coco"
 
 # COCO export settings (only used when EXPORT_FORMAT = "coco")
-COCO_CATEGORIES = None  
+COCO_CATEGORIES = None
 
 # Whether bounding box XML files exist in input/labels folder
 # If True: system will load images and corresponding XML files with bounding boxes

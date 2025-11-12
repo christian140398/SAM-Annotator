@@ -2,6 +2,7 @@
 Toolbar component for SAM Annotator
 Replicates the functionality of the React Toolbar component
 """
+
 import os
 import re
 from typing import Literal, Optional
@@ -10,8 +11,13 @@ from PySide6.QtCore import Qt, Signal, QSize, QByteArray
 from PySide6.QtGui import QColor, QIcon, QPixmap, QPainter
 from PySide6.QtSvg import QSvgRenderer
 from frontend.theme import (
-    ITEM_BG, ITEM_BORDER, TEXT_COLOR, TOPBAR_TEXT_MUTED,
-    PRIMARY_COLOR, PRIMARY_HOVER, PRIMARY_PRESSED
+    ITEM_BG,
+    ITEM_BORDER,
+    TEXT_COLOR,
+    TOPBAR_TEXT_MUTED,
+    PRIMARY_COLOR,
+    PRIMARY_HOVER,
+    PRIMARY_PRESSED,
 )
 import config
 
@@ -25,26 +31,28 @@ _ICON_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "icons")
 def create_white_svg_icon(svg_path: str) -> QIcon:
     """Load SVG file and create a white-colored version as QIcon"""
     try:
-        with open(svg_path, 'r', encoding='utf-8') as f:
+        with open(svg_path, "r", encoding="utf-8") as f:
             svg_content = f.read()
-        
+
         # Replace stroke colors with white
         # Match stroke:#... in CSS styles (e.g., stroke:#020202;)
-        svg_content = re.sub(r'stroke:#[0-9a-fA-F]{3,6}', 'stroke:#ffffff', svg_content)
+        svg_content = re.sub(r"stroke:#[0-9a-fA-F]{3,6}", "stroke:#ffffff", svg_content)
         # Match stroke="..." attributes
         svg_content = re.sub(r'stroke="[^"]*"', 'stroke="#ffffff"', svg_content)
-        
+
         # Replace fill colors with white (except for fill="none" or fill:none)
         # Match fill:#... in CSS styles (but not fill:none)
-        svg_content = re.sub(r'fill:#([0-9a-fA-F]{3,6})(?!\s*none)', 'fill:#ffffff', svg_content)
+        svg_content = re.sub(
+            r"fill:#([0-9a-fA-F]{3,6})(?!\s*none)", "fill:#ffffff", svg_content
+        )
         # Match fill="..." attributes (but not fill="none")
         svg_content = re.sub(r'fill="(?!none)[^"]*"', 'fill="#ffffff"', svg_content)
-        
+
         # Also replace any color: attributes in CSS
-        svg_content = re.sub(r'color:#[0-9a-fA-F]{3,6}', 'color:#ffffff', svg_content)
-        
+        svg_content = re.sub(r"color:#[0-9a-fA-F]{3,6}", "color:#ffffff", svg_content)
+
         # Create QIcon from modified SVG content using QSvgRenderer
-        svg_bytes = QByteArray(svg_content.encode('utf-8'))
+        svg_bytes = QByteArray(svg_content.encode("utf-8"))
         renderer = QSvgRenderer(svg_bytes)
         if renderer.isValid():
             pixmap = QPixmap(24, 24)
@@ -61,16 +69,43 @@ def create_white_svg_icon(svg_path: str) -> QIcon:
         # Fallback to loading SVG as-is
         return QIcon(svg_path)
 
+
 # Base tool definitions with icons (SVG file paths or emoji fallback)
 BASE_TOOLS = [
-    {"id": "segment", "icon": os.path.join(_ICON_DIR, "line-segments-fill-svgrepo-com.svg"), "label": "Segment", "shortcut": "A"},
-    {"id": "brush", "icon": os.path.join(_ICON_DIR, "draw-svgrepo-com.svg"), "label": "Brush", "shortcut": "S"},
-    {"id": "pan", "icon": os.path.join(_ICON_DIR, "pan-cursor-svgrepo-com.svg"), "label": "Pan", "shortcut": "Space"},
-    {"id": "fit_bbox", "icon": os.path.join(_ICON_DIR, "fit-to-screen-svgrepo-com.svg"), "label": "Fit to Bounding Box", "shortcut": "F"},
+    {
+        "id": "segment",
+        "icon": os.path.join(_ICON_DIR, "line-segments-fill-svgrepo-com.svg"),
+        "label": "Segment",
+        "shortcut": "A",
+    },
+    {
+        "id": "brush",
+        "icon": os.path.join(_ICON_DIR, "draw-svgrepo-com.svg"),
+        "label": "Brush",
+        "shortcut": "S",
+    },
+    {
+        "id": "pan",
+        "icon": os.path.join(_ICON_DIR, "pan-cursor-svgrepo-com.svg"),
+        "label": "Pan",
+        "shortcut": "Space",
+    },
+    {
+        "id": "fit_bbox",
+        "icon": os.path.join(_ICON_DIR, "fit-to-screen-svgrepo-com.svg"),
+        "label": "Fit to Bounding Box",
+        "shortcut": "F",
+    },
 ]
 
 # Bounding box tool (only when BOUNDING_BOX_EXISTS is False)
-BBOX_TOOL = {"id": "bbox", "icon": os.path.join(_ICON_DIR, "resize-svgrepo-com.svg"), "label": "Bounding Box", "shortcut": "B"}
+BBOX_TOOL = {
+    "id": "bbox",
+    "icon": os.path.join(_ICON_DIR, "resize-svgrepo-com.svg"),
+    "label": "Bounding Box",
+    "shortcut": "B",
+}
+
 
 def get_tools():
     """Get tools list based on configuration"""
@@ -84,6 +119,7 @@ def get_tools():
 
 class ToolButton(QPushButton):
     """Custom button for toolbar tools with active state"""
+
     def __init__(self, tool_id: str, icon: str, label: str, shortcut: str, parent=None):
         super().__init__(parent)
         self.tool_id = tool_id
@@ -91,7 +127,7 @@ class ToolButton(QPushButton):
         self.shortcut = shortcut
         self._is_active = False
         self._icon_path = icon if os.path.isfile(icon) else None
-        
+
         # Set button properties
         if self._icon_path:
             # Use SVG icon (colored white)
@@ -101,18 +137,18 @@ class ToolButton(QPushButton):
         else:
             # Use emoji/text fallback
             self.setText(icon)
-        
+
         self.setFixedSize(48, 48)  # w-12 h-12 = 48px
         self.setToolTip(f"{label}\n{shortcut}")
-        
+
         # Set initial style
         self.update_style()
-    
+
     def set_active(self, active: bool):
         """Set the active state of the button"""
         self._is_active = active
         self.update_style()
-    
+
     def update_style(self):
         """Update button style based on active state"""
         if self._is_active:
@@ -162,61 +198,59 @@ class ToolButton(QPushButton):
 
 class Toolbar(QWidget):
     """Vertical toolbar widget matching the React Toolbar component"""
-    
+
     # Signal emitted when tool changes
     tool_changed = Signal(str)  # Emits tool_id when tool is selected
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedWidth(64)  # w-16 = 64px
         self.setObjectName("ToolbarWidget")
-        
+
         # Current active tool
         self.active_tool: Optional[Tool] = None
-        
+
         # Store tool buttons
         self.tool_buttons: dict[str, ToolButton] = {}
-        
+
         # Ensure the widget itself has the background color using palette
         self.setAutoFillBackground(True)
         palette = self.palette()
         palette.setColor(self.backgroundRole(), QColor(ITEM_BG))
         self.setPalette(palette)
-        
+
         # Apply styles
         self.apply_styles()
-        
+
         self.setup_ui()
-        
+
         # Set default active tool to "segment"
         self.set_active_tool("segment")
-    
+
     def setup_ui(self):
         """Set up the UI layout"""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 16, 0, 16)  # py-4 = 16px vertical padding
         layout.setSpacing(8)  # gap-2 = 8px spacing
         layout.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
-        
+
         # Get tools based on configuration
         tools = get_tools()
-        
+
         # Create tool buttons
         for tool in tools:
             button = ToolButton(
-                tool["id"],
-                tool["icon"],
-                tool["label"],
-                tool["shortcut"],
-                self
+                tool["id"], tool["icon"], tool["label"], tool["shortcut"], self
             )
-            button.clicked.connect(lambda checked, tid=tool["id"]: self.on_tool_clicked(tid))
+            button.clicked.connect(
+                lambda checked, tid=tool["id"]: self.on_tool_clicked(tid)
+            )
             self.tool_buttons[tool["id"]] = button
             layout.addWidget(button)
-        
+
         # Add stretch to push buttons to top
         layout.addStretch()
-    
+
     def apply_styles(self):
         """Apply styles to the toolbar"""
         self.setStyleSheet(f"""
@@ -228,7 +262,7 @@ class Toolbar(QWidget):
                 background-color: {ITEM_BG};
             }}
         """)
-    
+
     def on_tool_clicked(self, tool_id: str):
         """Handle tool button click"""
         # fit_bbox is an action, not a tool - it doesn't change active tool state
@@ -238,17 +272,16 @@ class Toolbar(QWidget):
         else:
             self.set_active_tool(tool_id)
             self.tool_changed.emit(tool_id)
-    
+
     def set_active_tool(self, tool_id: Optional[Tool]):
         """Set the active tool"""
         # Deactivate all buttons
         for button in self.tool_buttons.values():
             button.set_active(False)
-        
+
         # Activate selected tool
         if tool_id and tool_id in self.tool_buttons:
             self.tool_buttons[tool_id].set_active(True)
             self.active_tool = tool_id
         else:
             self.active_tool = None
-
