@@ -3,11 +3,11 @@ Main window for SAM Annotator using PySide6
 """
 
 import os
-import glob
 import uuid
 import shutil
 import xml.etree.ElementTree as ET
 import hashlib
+import re
 from typing import Optional, List, Dict, Tuple
 from PySide6.QtWidgets import (
     QMainWindow,
@@ -120,6 +120,29 @@ def load_labels_with_colors(label_file: str) -> Tuple[List[str], Dict[str, str]]
         colors[label] = generate_random_color_hex(label)
 
     return labels, colors
+
+
+def natural_sort_key(path: str) -> tuple:
+    """
+    Generate a sort key for natural/numeric sorting of file paths.
+    This ensures that files like f1.jpg, f2.jpg, f10.jpg are sorted correctly.
+    Handles any filename pattern by extracting and comparing numbers numerically.
+
+    Args:
+        path: File path to generate sort key for
+
+    Returns:
+        Tuple for sorting that compares numbers numerically
+    """
+    filename = os.path.basename(path)
+    # Split filename into parts, converting numbers to integers for proper numeric comparison
+    parts = []
+    for part in re.split(r'(\d+)', filename):
+        if part.isdigit():
+            parts.append((0, int(part)))  # Numeric part - compare as integer
+        else:
+            parts.append((1, part.lower()))  # Text part - compare case-insensitively
+    return tuple(parts)
 
 
 class PreloadEmbeddingWorker(QObject):
@@ -369,24 +392,72 @@ class MainWindow(QMainWindow):
             self.current_label_id = self.labels[0]["id"]
 
     def load_image_list(self):
-        """Load list of images from input/images directory"""
+        """Load list of images from input/images directory in folder order"""
         if not os.path.isdir(IMG_DIR):
             # Create directory if it doesn't exist
             os.makedirs(IMG_DIR, exist_ok=True)
             print(f"No images directory found at {IMG_DIR}. Created directory.")
             return
 
-        self.image_paths = sorted(
-            [
-                p
-                for p in glob.glob(os.path.join(IMG_DIR, "*"))
-                if p.lower().endswith((".jpg", ".jpeg", ".png"))
-            ]
-        )
+        # Get all image files with their full paths
+        image_files = []
+        for filename in os.listdir(IMG_DIR):
+            if filename.lower().endswith((".jpg", ".jpeg", ".png")):
+                full_path = os.path.join(IMG_DIR, filename)
+                image_files.append(full_path)
+        
+        # Sort using natural/numeric sorting to handle f1, f2, f10 correctly
+        # This ensures numbers in filenames are compared numerically, not alphabetically
+        # This will sort f1, f2, f3... f10, f11... f35 in the correct order
+        self.image_paths = sorted(image_files, key=natural_sort_key)
 
         print(f"Found {len(self.image_paths)} image(s) in {IMG_DIR}")
         if self.image_paths:
             print(f"First image: {os.path.basename(self.image_paths[0])}")
+            # Print all images for debugging
+            print("Image order:")
+            for i, path in enumerate(self.image_paths):
+                print(f"  {i+1}. {os.path.basename(path)}")
+        
+        # Find the first unprocessed image (skip images that already exist in output folder)
+        self.find_first_unprocessed_image()
+
+    def find_first_unprocessed_image(self):
+        """
+        Find the first image that hasn't been processed yet (doesn't exist in output folder).
+        Sets current_image_idx to the first unprocessed image, or 0 if all are unprocessed.
+        """
+        if not self.image_paths:
+            self.current_image_idx = 0
+            return
+        
+        # Check if output directory exists
+        if not os.path.isdir(OUTPUT_IMG_DIR):
+            # No output directory means no images have been processed
+            self.current_image_idx = 0
+            print("No output directory found - starting from first image")
+            return
+        
+        # Get list of already processed images (files in output/images folder)
+        processed_images = set()
+        if os.path.isdir(OUTPUT_IMG_DIR):
+            for filename in os.listdir(OUTPUT_IMG_DIR):
+                if filename.lower().endswith((".jpg", ".jpeg", ".png")):
+                    processed_images.add(filename.lower())
+        
+        # Find first image that hasn't been processed
+        for idx, img_path in enumerate(self.image_paths):
+            img_filename = os.path.basename(img_path)
+            if img_filename.lower() not in processed_images:
+                self.current_image_idx = idx
+                print(f"Found first unprocessed image: {img_filename} (index {idx + 1}/{len(self.image_paths)})")
+                if processed_images:
+                    print(f"Skipped {len(processed_images)} already processed image(s)")
+                return
+        
+        # All images have been processed
+        self.current_image_idx = len(self.image_paths) - 1
+        print(f"All {len(self.image_paths)} images have already been processed")
 
     def load_current_image(self):
         """Load the current image and corresponding label from input/labels folder"""
