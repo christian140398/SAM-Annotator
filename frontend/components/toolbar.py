@@ -6,7 +6,7 @@ Replicates the functionality of the React Toolbar component
 import os
 import re
 from typing import Literal, Optional
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel
 from PySide6.QtCore import Qt, Signal, QSize, QByteArray
 from PySide6.QtGui import QColor, QIcon, QPixmap, QPainter
 from PySide6.QtSvg import QSvgRenderer
@@ -213,6 +213,9 @@ class Toolbar(QWidget):
         # Store tool buttons
         self.tool_buttons: dict[str, ToolButton] = {}
 
+        # Brush size indicator label (will be set up in setup_ui)
+        self.brush_size_label: Optional[QLabel] = None
+
         # Ensure the widget itself has the background color using palette
         self.setAutoFillBackground(True)
         palette = self.palette()
@@ -247,6 +250,21 @@ class Toolbar(QWidget):
             )
             self.tool_buttons[tool["id"]] = button
             layout.addWidget(button)
+
+            # Add brush size indicator underneath the brush button
+            if tool["id"] == "brush":
+                brush_size_label = QLabel("10", self)
+                brush_size_label.setAlignment(Qt.AlignCenter)
+                brush_size_label.setFixedHeight(16)
+                brush_size_label.setStyleSheet(f"""
+                    QLabel {{
+                        color: {TOPBAR_TEXT_MUTED};
+                        font-size: 11px;
+                        background-color: transparent;
+                    }}
+                """)
+                self.brush_size_label = brush_size_label
+                layout.addWidget(brush_size_label)
 
         # Add stretch to push buttons to top
         layout.addStretch()
@@ -285,3 +303,8 @@ class Toolbar(QWidget):
             self.active_tool = tool_id
         else:
             self.active_tool = None
+
+    def update_brush_size(self, size: int):
+        """Update the brush size indicator"""
+        if self.brush_size_label:
+            self.brush_size_label.setText(str(size))

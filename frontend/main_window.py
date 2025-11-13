@@ -280,6 +280,9 @@ class MainWindow(QMainWindow):
 
         main_layout.addLayout(content_layout, 1)
 
+        # Initialize brush size indicator
+        self.update_brush_size_indicator()
+
         # Keybinds bar
         keybinds_frame = QFrame()
         keybinds_frame.setStyleSheet(f"background-color: {ITEM_BG};")
@@ -631,6 +634,14 @@ class MainWindow(QMainWindow):
         shortcut_q = QShortcut(QKeySequence("Q"), self)
         shortcut_q.activated.connect(self.close)
 
+        # Arrow Up - Increase brush size
+        shortcut_up = QShortcut(QKeySequence(Qt.Key_Up), self)
+        shortcut_up.activated.connect(self.increase_brush_size)
+
+        # Arrow Down - Decrease brush size
+        shortcut_down = QShortcut(QKeySequence(Qt.Key_Down), self)
+        shortcut_down.activated.connect(self.decrease_brush_size)
+
     def select_tool(self, tool_id: str):
         """Select a tool by ID (can be called from keyboard shortcuts)"""
         # fit_bbox is an action, not a tool - it doesn't change active tool state
@@ -651,6 +662,28 @@ class MainWindow(QMainWindow):
             # Regular tool selection
             self.image_view.active_tool = tool_id
             self.image_view.update_cursor()
+            # Update brush size indicator
+            self.update_brush_size_indicator()
+
+    def update_brush_size_indicator(self):
+        """Update the brush size indicator in the toolbar"""
+        if self.image_view:
+            brush_size = self.image_view.get_brush_size()
+            self.toolbar.update_brush_size(brush_size)
+
+    def increase_brush_size(self):
+        """Increase brush size by 1"""
+        if self.image_view:
+            current_size = self.image_view.get_brush_size()
+            self.image_view.set_brush_size(current_size + 1)
+            self.update_brush_size_indicator()
+
+    def decrease_brush_size(self):
+        """Decrease brush size by 1"""
+        if self.image_view:
+            current_size = self.image_view.get_brush_size()
+            self.image_view.set_brush_size(current_size - 1)
+            self.update_brush_size_indicator()
 
     def on_label_selected(self, label_id: str):
         """Handle label selection from topbar"""

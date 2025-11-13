@@ -660,6 +660,8 @@ class ImageView(QWidget):
             if self.display_scale > 0
             else self.brush_size
         )
+        # Ensure brush_radius is valid (at least 1, and not too large)
+        brush_radius = max(1, min(brush_radius, 1000))  # Cap at reasonable maximum
 
         # Create a temporary mask for the brush stroke
         temp_mask = np.zeros((h, w), dtype=np.uint8)
@@ -716,12 +718,19 @@ class ImageView(QWidget):
             if self.display_scale > 0
             else self.brush_size
         )
+        # Ensure brush_radius is valid (at least 1, and not too large)
+        brush_radius = max(1, min(brush_radius, 1000))  # Cap at reasonable maximum
 
         # Create a temporary mask for the brush line
         temp_mask = np.zeros((h, w), dtype=np.uint8)
-        thickness = (
-            brush_radius * 2 if brush_radius > 1 else -1
-        )  # -1 means filled circle
+        # Calculate thickness, ensuring it's within OpenCV's valid range
+        # OpenCV MAX_THICKNESS is typically 255, and thickness must be > 0 for cv2.line
+        if brush_radius <= 1:
+            thickness = 1  # Minimum valid thickness for cv2.line
+        else:
+            thickness = min(brush_radius * 2, 255)  # Cap at OpenCV's MAX_THICKNESS
+            thickness = max(1, int(thickness))  # Ensure at least 1 and is integer
+
         cv2.line(temp_mask, (start_x, start_y), (end_x, end_y), 255, thickness)
         # Also draw circles at start and end for smoother strokes
         cv2.circle(temp_mask, (start_x, start_y), brush_radius, 255, -1)
@@ -1483,14 +1492,14 @@ class ImageView(QWidget):
         if angle_delta > 0:
             # Zoom in
             new_zoom = self.zoom_scale * zoom_factor
-            # Limit max zoom (e.g., 5x)
-            if new_zoom <= 5.0:
+            # Limit max zoom (e.g., 50x for detailed inspection)
+            if new_zoom <= 50.0:
                 self.zoom_in_at_position(widget_x, widget_y, zoom_factor)
         elif angle_delta < 0:
             # Zoom out
             new_zoom = self.zoom_scale / zoom_factor
-            # Limit min zoom (can't go below base_scale)
-            if new_zoom >= self.base_scale:
+            # Allow zooming out further (minimum 0.1x zoom_scale)
+            if new_zoom >= 0.1:
                 self.zoom_in_at_position(widget_x, widget_y, 1.0 / zoom_factor)
 
         event.accept()
@@ -1628,6 +1637,25 @@ class ImageView(QWidget):
         """
         return list(zip(self.finalized_masks, self.finalized_labels))
 
+    def get_brush_size(self) -> int:
+        """
+        Get the current brush size
+
+        Returns:
+            Brush size in pixels (image coordinates)
+        """
+        return self.brush_size
+
+    def set_brush_size(self, size: int):
+        """
+        Set the brush size
+
+        Args:
+            size: Brush size in pixels (image coordinates), will be clamped to valid range
+        """
+        # Clamp brush size to reasonable range (1-100)
+        self.brush_size = max(1, min(100, size))
+
     def clear_segments(self):
         """Clear all segments"""
         self.finalized_masks = []
@@ -1696,8 +1724,8 @@ class ImageView(QWidget):
             self.zoom_scale = 1.0
 
         # Limit max zoom
-        if self.zoom_scale > 5.0:
-            self.zoom_scale = 5.0
+        if self.zoom_scale > 50.0:
+            self.zoom_scale = 50.0
 
         # Calculate display scale
         self.display_scale = self.base_scale * self.zoom_scale
