@@ -359,8 +359,8 @@ class MainWindow(QMainWindow):
         # Install event filter on application to capture space key events globally
         QApplication.instance().installEventFilter(self)
 
-        # Show window in windowed mode
-        self.show()
+        # Show window in maximized mode
+        self.showMaximized()
 
         # Load first image if available (do this after show() so widget is ready)
         if self.image_paths:
