@@ -414,6 +414,12 @@ class ImageView(QWidget):
             rgb = QColor(hex_color).getRgb()[:3]
             self.label_colors[label_id] = (rgb[2], rgb[1], rgb[0])  # RGB to BGR
 
+        # Invalidate overlay cache because label colors changed
+        self.overlay_cache_valid = False
+        self.cached_overlay_image = None
+        self.update_display()
+        self.update()
+
     def set_labels(self, labels: List[dict]):
         """
         Set label information for display
@@ -835,6 +841,9 @@ class ImageView(QWidget):
         # Need at least one positive point
         if len(positive_points) == 0:
             self.current_mask = None
+            # Invalidate overlay cache because mask was cleared
+            self.overlay_cache_valid = False
+            self.cached_overlay_image = None
             self.update_display()
             self.update()
             return
@@ -872,6 +881,7 @@ class ImageView(QWidget):
         # Update display (invalidate cache when mask changes)
         # Note: is_actively_drawing is already set by add_point, so fast scaling will be used
         self.overlay_cache_valid = False
+        self.cached_overlay_image = None
         self.update_display()
         self.update()
 
@@ -978,6 +988,9 @@ class ImageView(QWidget):
         if self.finalized_masks:
             self.finalized_masks.pop()
             self.finalized_labels.pop()
+            # Invalidate overlay cache because segment was removed
+            self.overlay_cache_valid = False
+            self.cached_overlay_image = None
             self.update_display()
             self.update()
             return True

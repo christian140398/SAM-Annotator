@@ -17,6 +17,9 @@ from PySide6.QtWidgets import (
     QFrame,
     QMessageBox,
     QApplication,
+    QDialog,
+    QDialogButtonBox,
+    QLabel,
 )
 from PySide6.QtGui import QKeySequence, QShortcut, QKeyEvent
 from PySide6.QtCore import Qt, QEvent, QThread, QObject, Signal
@@ -260,6 +263,9 @@ class MainWindow(QMainWindow):
         self.topbar = TopBar()
         topbar_layout.addWidget(self.topbar)
         main_layout.addWidget(topbar_frame, 0)
+
+        # Set labels in topbar (labels are already initialized at this point)
+        self.topbar.set_labels(self.labels)
 
         # Content area
         content_layout = QHBoxLayout()
@@ -658,6 +664,7 @@ class MainWindow(QMainWindow):
         # Topbar -> MainWindow
         self.topbar.label_selected.connect(self.on_label_selected)
         self.topbar.label_added.connect(self.on_label_added)
+        self.topbar.label_color_changed.connect(self.on_label_color_changed)
 
     def setup_shortcuts(self):
         """Setup keyboard shortcuts"""
@@ -763,8 +770,110 @@ class MainWindow(QMainWindow):
 
     def on_label_selected(self, label_id: str):
         """Handle label selection from topbar"""
-        self.current_label_id = label_id
-        self.image_view.set_current_label(label_id)
+        # Check if there's an active segment before changing label
+        if self.image_view.has_active_segment():
+            # Show prompt dialog
+            reply = self._show_label_change_dialog()
+
+            if reply == "finalize":
+                # Finalize segment
+                self.finalize_segment()
+                self.current_label_id = label_id
+                self.image_view.set_current_label(label_id)
+            elif reply == "delete":
+                # Delete segment (clear current segment)
+                self.image_view.clear_current_segment()
+                self.current_label_id = label_id
+                self.image_view.set_current_label(label_id)
+            # If "cancel", do nothing (don't change label)
+        else:
+            # No active segment, just change label
+            self.current_label_id = label_id
+            self.image_view.set_current_label(label_id)
+
+    def _show_label_change_dialog(self) -> str:
+        """Show dialog asking what to do with active segment when changing label
+
+        Returns:
+            "finalize", "delete", or "cancel"
+        """
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Change Label")
+        dialog.setModal(True)
+        dialog.setMinimumWidth(400)
+
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(16)
+
+        # Message label
+        message_label = QLabel(
+            "You are about to change labels without finalizing the current segment."
+        )
+        message_label.setWordWrap(True)
+        message_label.setStyleSheet("font-size: 14px; color: #ffffff; padding: 8px;")
+        layout.addWidget(message_label)
+
+        # Buttons
+        button_box = QDialogButtonBox()
+
+        finalize_button = button_box.addButton(
+            "Finalize segment", QDialogButtonBox.AcceptRole
+        )
+        delete_button = button_box.addButton(
+            "Delete segment", QDialogButtonBox.AcceptRole
+        )
+        cancel_button = button_box.addButton("Cancel", QDialogButtonBox.RejectRole)
+
+        # Style buttons
+        button_box.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {ITEM_BG};
+                border: 1px solid #2b303b;
+                color: #ffffff;
+                padding: 8px 16px;
+                border-radius: 4px;
+                min-width: 120px;
+            }}
+            QPushButton:hover {{
+                background-color: #2b303b;
+            }}
+            QPushButton:default {{
+                background-color: #3b82f6;
+            }}
+        """)
+
+        layout.addWidget(button_box)
+
+        # Style dialog
+        dialog.setStyleSheet(f"""
+            QDialog {{
+                background-color: {ITEM_BG};
+                color: #ffffff;
+            }}
+            QLabel {{
+                color: #ffffff;
+                background-color: transparent;
+            }}
+        """)
+
+        # Connect buttons
+        result = {"action": "cancel"}
+
+        def on_finalize():
+            result["action"] = "finalize"
+            dialog.accept()
+
+        def on_delete():
+            result["action"] = "delete"
+            dialog.accept()
+
+        finalize_button.clicked.connect(on_finalize)
+        delete_button.clicked.connect(on_delete)
+        cancel_button.clicked.connect(dialog.reject)
+
+        # Show dialog
+        dialog.exec()
+        return result["action"]
 
     def on_label_added(self, label_data: dict):
         """Handle new label added"""
@@ -774,6 +883,9 @@ class MainWindow(QMainWindow):
         # Update keybinds bar with new labels
         self.keybinds_bar.set_labels(self.labels)
 
+        # Update topbar with new labels
+        self.topbar.set_labels(self.labels)
+
         # Update image view colors and labels info
         label_colors = {label["id"]: label["color"] for label in self.labels}
         self.image_view.set_label_colors(label_colors)
@@ -782,11 +894,49 @@ class MainWindow(QMainWindow):
         # Recreate shortcuts to include new label
         self.setup_shortcuts()
 
+    def on_label_color_changed(self, label_id: str, new_color: str):
+        """Handle label color change from settings dialog"""
+        # Update the label color in self.labels
+        for label in self.labels:
+            if label["id"] == label_id:
+                label["color"] = new_color
+                break
+
+        # Update all components with new colors
+        label_colors = {label["id"]: label["color"] for label in self.labels}
+        self.image_view.set_label_colors(
+            label_colors
+        )  # This will invalidate cache and update display
+        self.image_view.set_labels(self.labels)
+
+        # Update segments panel
+        self.segments_panel.set_labels(self.labels)
+
+        # Update topbar (to refresh its internal state)
+        self.topbar.set_labels(self.labels)
+
     def select_label(self, label_id: str):
         """Select a label by ID"""
-        # Finalize current segment if exists
-        self.finalize_segment()
-        self.on_label_selected(label_id)
+        # Check if there's an active segment before changing label
+        if self.image_view.has_active_segment():
+            # Show prompt dialog
+            reply = self._show_label_change_dialog()
+
+            if reply == "finalize":
+                # Finalize segment
+                self.finalize_segment()
+                self.current_label_id = label_id
+                self.image_view.set_current_label(label_id)
+            elif reply == "delete":
+                # Delete segment (clear current segment)
+                self.image_view.clear_current_segment()
+                self.current_label_id = label_id
+                self.image_view.set_current_label(label_id)
+            # If "cancel", do nothing (don't change label)
+        else:
+            # No active segment, just change label
+            self.current_label_id = label_id
+            self.image_view.set_current_label(label_id)
 
     def finalize_segment(self):
         """Finalize the current segment"""
