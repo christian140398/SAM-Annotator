@@ -3,6 +3,8 @@ TopBar component for SAM Annotator
 Replicates the functionality of the React TopBar component
 """
 
+import os
+import re
 from typing import Optional, List
 from PySide6.QtWidgets import (
     QWidget,
@@ -14,13 +16,65 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QLineEdit,
     QColorDialog,
+    QMenu,
+    QScrollArea,
+    QFrame,
 )
-from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtCore import Qt, Signal, QSize, QByteArray, QPoint
 from PySide6.QtGui import QColor, QPainter, QIcon, QPixmap
 from PySide6.QtWidgets import QStyledItemDelegate
+from PySide6.QtSvg import QSvgRenderer
 from frontend.theme import (
     get_topbar_style,
+    ITEM_BG,
+    ITEM_BORDER,
+    TEXT_COLOR,
 )
+
+# Get the directory of this file to resolve icon paths
+_ICON_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "icons")
+
+
+def create_white_svg_icon(svg_path: str) -> QIcon:
+    """Load SVG file and create a white-colored version as QIcon"""
+    try:
+        with open(svg_path, "r", encoding="utf-8") as f:
+            svg_content = f.read()
+
+        # Replace stroke colors with white
+        # Match stroke:#... in CSS styles (e.g., stroke:#020202;)
+        svg_content = re.sub(r"stroke:#[0-9a-fA-F]{3,6}", "stroke:#ffffff", svg_content)
+        # Match stroke="..." attributes
+        svg_content = re.sub(r'stroke="[^"]*"', 'stroke="#ffffff"', svg_content)
+
+        # Replace fill colors with white (except for fill="none" or fill:none)
+        # Match fill:#... in CSS styles (but not fill:none)
+        svg_content = re.sub(
+            r"fill:#([0-9a-fA-F]{3,6})(?!\s*none)", "fill:#ffffff", svg_content
+        )
+        # Match fill="..." attributes (but not fill="none")
+        svg_content = re.sub(r'fill="(?!none)[^"]*"', 'fill="#ffffff"', svg_content)
+
+        # Also replace any color: attributes in CSS
+        svg_content = re.sub(r"color:#[0-9a-fA-F]{3,6}", "color:#ffffff", svg_content)
+
+        # Create QIcon from modified SVG content using QSvgRenderer
+        svg_bytes = QByteArray(svg_content.encode("utf-8"))
+        renderer = QSvgRenderer(svg_bytes)
+        if renderer.isValid():
+            pixmap = QPixmap(24, 24)
+            pixmap.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(pixmap)
+            renderer.render(painter)
+            painter.end()
+            icon = QIcon(pixmap)
+            return icon
+        else:
+            # Fallback to loading SVG as-is
+            return QIcon(svg_path)
+    except Exception:
+        # Fallback to loading SVG as-is
+        return QIcon(svg_path)
 
 
 class LabelColorDelegate:
@@ -190,12 +244,208 @@ class AddLabelDialog(QDialog):
         return name, color
 
 
+class LabelColorDialog(QDialog):
+    """Dialog for viewing and managing label colors"""
+
+    # Signal emitted when a label color is changed
+    color_changed = Signal(str, str)  # Emits (label_id, new_color)
+
+    def __init__(self, labels: List[LabelColorDelegate], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Label Colors")
+        self.setModal(True)
+        self.setMinimumWidth(400)
+        self.setMinimumHeight(300)
+
+        # Store original labels list for reference
+        self.labels = labels
+
+        # Dialog layout
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        # Title
+        title_label = QLabel("Label Colors")
+        title_label.setStyleSheet("font-size: 18px; font-weight: 600; color: #ffffff;")
+        layout.addWidget(title_label)
+
+        # Scroll area for labels
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setStyleSheet(f"""
+            QScrollArea {{
+                background-color: transparent;
+                border: none;
+            }}
+            QScrollBar:vertical {{
+                background-color: {ITEM_BG};
+                width: 12px;
+                border-radius: 6px;
+            }}
+            QScrollBar::handle:vertical {{
+                background-color: {ITEM_BORDER};
+                border-radius: 6px;
+                min-height: 20px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background-color: #3b4048;
+            }}
+        """)
+
+        # Container for label items
+        labels_container = QWidget()
+        labels_layout = QVBoxLayout(labels_container)
+        labels_layout.setContentsMargins(0, 0, 0, 0)
+        labels_layout.setSpacing(8)
+
+        # Add label items
+        self.label_items = []
+        self.color_boxes = {}  # Store color boxes by label_id for updates
+        for label in labels:
+            label_item = self.create_label_item(label)
+            labels_layout.addWidget(label_item)
+            self.label_items.append(label_item)
+
+        # Add stretch at the end
+        labels_layout.addStretch()
+
+        scroll_area.setWidget(labels_container)
+        layout.addWidget(scroll_area)
+
+        # Close button
+        button_box = QDialogButtonBox(QDialogButtonBox.Close)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+
+        # Style the dialog
+        self.setStyleSheet(f"""
+            QDialog {{
+                background-color: {ITEM_BG};
+                color: {TEXT_COLOR};
+            }}
+            QLabel {{
+                color: {TEXT_COLOR};
+                background-color: transparent;
+            }}
+            QPushButton {{
+                background-color: {ITEM_BG};
+                border: 1px solid {ITEM_BORDER};
+                border-radius: 4px;
+                padding: 6px 12px;
+            }}
+            QPushButton:hover {{
+                background-color: {ITEM_BORDER};
+            }}
+            QDialogButtonBox QPushButton {{
+                min-width: 80px;
+                padding: 6px 16px;
+            }}
+        """)
+
+    def create_label_item(self, label: LabelColorDelegate) -> QFrame:
+        """Create a label item widget with name and color box"""
+        frame = QFrame()
+        frame.setStyleSheet(f"""
+            QFrame {{
+                background-color: {ITEM_BG};
+                border: 1px solid {ITEM_BORDER};
+                border-radius: 4px;
+                padding: 8px;
+            }}
+        """)
+
+        layout = QHBoxLayout(frame)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(12)
+
+        # Color box - make it a clickable button
+        color_box = QPushButton()
+        color_box.setFixedSize(32, 32)
+        color_box.setCursor(Qt.PointingHandCursor)
+        color_box.setToolTip("Click to change color")
+        self.update_color_box(color_box, label.color)
+
+        # Store reference to color box and hex label for updates
+        self.color_boxes[label.id] = {
+            "button": color_box,
+            "label": label,
+            "hex_label": None,  # Will be set below
+        }
+
+        # Connect click handler
+        color_box.clicked.connect(
+            lambda checked, lid=label.id: self.on_color_box_clicked(lid)
+        )
+
+        # Label name
+        name_label = QLabel(label.name)
+        name_label.setStyleSheet("font-size: 14px; color: #ffffff;")
+
+        # Color hex value
+        color_hex_label = QLabel(label.color)
+        color_hex_label.setStyleSheet("font-size: 12px; color: #9ca3af;")
+        color_hex_label.setObjectName("muted")
+
+        # Store hex label reference
+        self.color_boxes[label.id]["hex_label"] = color_hex_label
+
+        layout.addWidget(color_box)
+        layout.addWidget(name_label)
+        layout.addStretch()
+        layout.addWidget(color_hex_label)
+
+        return frame
+
+    def update_color_box(self, color_box: QPushButton, color: str):
+        """Update the appearance of a color box button"""
+        color_box.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {color};
+                border: 1px solid {ITEM_BORDER};
+                border-radius: 4px;
+            }}
+            QPushButton:hover {{
+                border: 2px solid {TEXT_COLOR};
+            }}
+        """)
+
+    def on_color_box_clicked(self, label_id: str):
+        """Handle color box click - open color picker"""
+        if label_id not in self.color_boxes:
+            return
+
+        label_info = self.color_boxes[label_id]
+        label = label_info["label"]
+        current_color = QColor(label.color)
+
+        # Open color picker dialog
+        new_color = QColorDialog.getColor(
+            current_color, self, f"Choose color for {label.name}"
+        )
+
+        if new_color.isValid() and new_color != current_color:
+            # Update label color
+            new_color_hex = new_color.name()
+            label.color = new_color_hex
+
+            # Update UI
+            self.update_color_box(label_info["button"], new_color_hex)
+            label_info["hex_label"].setText(new_color_hex)
+
+            # Emit signal to notify parent
+            self.color_changed.emit(label_id, new_color_hex)
+
+
 class TopBar(QWidget):
     """Top bar widget matching the React TopBar component"""
 
     # Signals for callbacks
     label_selected = Signal(str)  # Emits label_id when label is selected
     label_added = Signal(object)  # Emits Label object when label is added
+    label_color_changed = Signal(
+        str, str
+    )  # Emits (label_id, new_color) when label color is changed
     import_requested = Signal()  # Emits when Import button is clicked
     export_requested = Signal()  # Emits when Export button is clicked
 
@@ -247,10 +497,21 @@ class TopBar(QWidget):
         left_layout.addWidget(self.image_name_label)
         left_layout.addStretch()
 
-        # Right side: (removed label selector, import, and export buttons)
-        # Keep right_layout for potential future additions but leave it empty for now
+        # Right side: Settings button
         right_layout = QHBoxLayout()
         right_layout.setSpacing(12)
+
+        # Settings button
+        settings_icon_path = os.path.join(_ICON_DIR, "settings-svgrepo-com.svg")
+        self.settings_button = QPushButton()
+        if os.path.isfile(settings_icon_path):
+            icon = create_white_svg_icon(settings_icon_path)
+            self.settings_button.setIcon(icon)
+            self.settings_button.setIconSize(QSize(24, 24))
+        self.settings_button.setFixedSize(40, 40)
+        self.settings_button.setToolTip("Settings")
+        self.settings_button.clicked.connect(self.show_settings_menu)
+        right_layout.addWidget(self.settings_button)
 
         # Add layouts to main layout
         main_layout.addLayout(left_layout)
@@ -277,57 +538,10 @@ class TopBar(QWidget):
             )
             for label_item in labels
         ]
-        self.update_label_combo()
-
-    def update_label_combo(self):
-        """Update the label combo box with current labels"""
-        self.label_combo.blockSignals(True)
-        self.label_combo.clear()
-
-        # Update delegate with current labels
-        self.combo_delegate.set_labels(self.labels)
-
-        for label in self.labels:
-            # Item text is just the name (delegate will handle color rendering)
-            self.label_combo.addItem(label.name, label.id)
-
-        self.label_combo.blockSignals(False)
-
-        # Restore selection
-        if self.selected_label_id:
-            index = next(
-                (
-                    i
-                    for i, label in enumerate(self.labels)
-                    if label.id == self.selected_label_id
-                ),
-                -1,
-            )
-            if index >= 0:
-                self.label_combo.setCurrentIndex(index)
-
-    def on_label_changed(self, index: int):
-        """Handle label selection change"""
-        if index >= 0 and index < len(self.labels):
-            label_id = self.labels[index].id
-            self.selected_label_id = label_id
-            self.label_selected.emit(label_id)
 
     def set_selected_label(self, label_id: Optional[str]):
         """Set the currently selected label"""
         self.selected_label_id = label_id
-        if label_id:
-            index = next(
-                (i for i, label in enumerate(self.labels) if label.id == label_id), -1
-            )
-            if index >= 0:
-                self.label_combo.blockSignals(True)
-                self.label_combo.setCurrentIndex(index)
-                self.label_combo.blockSignals(False)
-        else:
-            self.label_combo.blockSignals(True)
-            self.label_combo.setCurrentIndex(-1)
-            self.label_combo.blockSignals(False)
 
     def open_add_label_dialog(self):
         """Open the add label dialog"""
@@ -340,6 +554,51 @@ class TopBar(QWidget):
                 label_id = str(int(datetime.now().timestamp() * 1000))
                 label_data = {"id": label_id, "name": name, "color": color}
                 self.labels.append(LabelColorDelegate(label_id, name, color))
-                self.update_label_combo()
-                self.label_combo.setCurrentIndex(len(self.labels) - 1)
                 self.label_added.emit(label_data)
+
+    def show_settings_menu(self):
+        """Show the settings dropdown menu"""
+        menu = QMenu(self)
+        menu.setStyleSheet(f"""
+            QMenu {{
+                background-color: {ITEM_BG};
+                border: 1px solid {ITEM_BORDER};
+                color: {TEXT_COLOR};
+                padding: 4px;
+                border-radius: 4px;
+            }}
+            QMenu::item {{
+                padding: 8px 16px;
+                border-radius: 4px;
+            }}
+            QMenu::item:selected {{
+                background-color: {ITEM_BORDER};
+            }}
+        """)
+
+        # Add "Label Color" menu item
+        label_color_action = menu.addAction("Label Color")
+        label_color_action.triggered.connect(self.on_label_color_clicked)
+
+        # Position menu below the button, aligned to the right edge
+        # Get button's bottom-right corner in global coordinates
+        button_bottom_right = self.settings_button.mapToGlobal(
+            QPoint(self.settings_button.width(), self.settings_button.height())
+        )
+        # Adjust x position so menu's right edge aligns with button's right edge
+        # We need to estimate menu width or use sizeHint after adding items
+        menu_width = menu.sizeHint().width()
+        menu_x = button_bottom_right.x() - menu_width
+        menu_y = button_bottom_right.y()
+        menu.exec(QPoint(menu_x, menu_y))
+
+    def on_label_color_clicked(self):
+        """Handle label color settings click"""
+        if not self.labels:
+            # No labels to show
+            return
+
+        dialog = LabelColorDialog(self.labels, self)
+        # Connect dialog's color_changed signal to TopBar's signal
+        dialog.color_changed.connect(self.label_color_changed.emit)
+        dialog.exec()
