@@ -9,7 +9,7 @@ import xml.etree.ElementTree as ET
 import hashlib
 import re
 from typing import Optional, List, Dict, Tuple
-from PySide6.QtWidgets import (
+from PySide6.QtWidgets import (  # type: ignore[import-untyped]
     QMainWindow,
     QWidget,
     QVBoxLayout,
@@ -20,9 +20,10 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QLabel,
-)
-from PySide6.QtGui import QKeySequence, QShortcut, QKeyEvent
-from PySide6.QtCore import Qt, QEvent, QThread, QObject, Signal
+) 
+
+from PySide6.QtGui import QKeySequence, QShortcut, QKeyEvent # type: ignore
+from PySide6.QtCore import Qt, QEvent, QThread, QObject, Signal # type: ignore
 import cv2
 import numpy as np
 from frontend.theme import get_main_window_style, ITEM_BG
@@ -80,7 +81,7 @@ def load_labels_from_file(label_file: str) -> List[str]:
 
 def generate_random_color_hex(seed: Optional[str] = None) -> str:
     """
-    Generate a deterministic color in hex format (#RRGGBB) based on seed.
+    Generate a deterministic color in hex format based on seed.
     Colors are consistent across different images and sessions.
 
     Args:
