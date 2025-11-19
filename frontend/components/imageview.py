@@ -79,6 +79,20 @@ class ImageView(QWidget):
         self.overlay_cache_valid = False  # Whether cache is up to date
         self.last_zoom_scale = 1.0  # Track zoom changes for cache invalidation
 
+        # Zoom throttling: delay display updates during rapid zoom
+        self.zoom_update_timer = QTimer(self)
+        self.zoom_update_timer.setSingleShot(True)
+        self.zoom_update_timer.timeout.connect(self._delayed_zoom_update)
+        self.pending_zoom_update = False
+        self.pending_zoom_widget_x = 0.0
+        self.pending_zoom_widget_y = 0.0
+        self.pending_zoom_img_x = 0
+        self.pending_zoom_img_y = 0
+        self.pending_zoom_factor = 1.0
+
+        # Drawing performance: track if actively drawing to use faster updates
+        self.is_actively_drawing = False  # True when brush is active or segmenting
+
         # Pan/zoom state
         self.is_panning = False
         self.last_pan_pos: Optional[QPoint] = None
@@ -794,6 +808,9 @@ class ImageView(QWidget):
         # Add point
         self.current_points.append(((img_x, img_y), is_positive))
 
+        # Mark as actively drawing for performance optimization
+        self.is_actively_drawing = True
+
         # Update mask prediction
         self.update_mask_from_points()
         self.point_added.emit()
@@ -853,6 +870,7 @@ class ImageView(QWidget):
         self.mask_updated.emit(mask)
 
         # Update display (invalidate cache when mask changes)
+        # Note: is_actively_drawing is already set by add_point, so fast scaling will be used
         self.overlay_cache_valid = False
         self.update_display()
         self.update()
@@ -906,6 +924,7 @@ class ImageView(QWidget):
         self.current_mask = None
         self.mask_history = []  # Clear undo history when finalizing
         self.points_history = []  # Clear points history when finalizing
+        self.is_actively_drawing = False  # No longer actively drawing
 
         # Emit signal
         self.segment_finalized.emit(self.finalized_masks[-1], self.current_label_id)
@@ -1045,12 +1064,12 @@ class ImageView(QWidget):
         for (x, y), is_positive in self.current_points:
             if is_positive:
                 # Positive: green
-                cv2.circle(overlay, (int(x), int(y)), 4, (0, 255, 0), -1)
-                cv2.circle(overlay, (int(x), int(y)), 4, (0, 200, 0), 1)
+                cv2.circle(overlay, (int(x), int(y)), 1, (0, 255, 0), -1)
+                cv2.circle(overlay, (int(x), int(y)), 1, (0, 200, 0), 1)
             else:
                 # Negative: red
-                cv2.circle(overlay, (int(x), int(y)), 4, (0, 0, 255), -1)
-                cv2.circle(overlay, (int(x), int(y)), 4, (0, 0, 200), 1)
+                cv2.circle(overlay, (int(x), int(y)), 1, (0, 0, 255), -1)
+                cv2.circle(overlay, (int(x), int(y)), 1, (0, 0, 200), 1)
 
         # Draw bounding box if present (dotted line)
         if self.bounding_box is not None:
@@ -1143,14 +1162,20 @@ class ImageView(QWidget):
             # Performance optimization: use faster scaling for very large images
             # When zoomed in a lot, the image is very large, so use FastTransformation
             # This is much faster than SmoothTransformation for large images
-            if new_w > 3000 or new_h > 3000 or self.zoom_scale > 3.0:
-                # For very large images or high zoom, use FastTransformation
-                # The quality difference is minimal when zoomed in
+            # Also use fast transformation when actively drawing to reduce stutter
+            if (
+                new_w > 3000
+                or new_h > 3000
+                or self.zoom_scale > 3.0
+                or self.is_actively_drawing
+            ):
+                # For very large images, high zoom, or during active drawing, use FastTransformation
+                # The quality difference is minimal when zoomed in or during drawing
                 self.display_image = QPixmap.fromImage(q_image).scaled(
                     new_w, new_h, Qt.KeepAspectRatio, Qt.FastTransformation
                 )
             else:
-                # Use smooth transformation for normal zoom levels
+                # Use smooth transformation for normal zoom levels when not drawing
                 self.display_image = QPixmap.fromImage(q_image).scaled(
                     new_w, new_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
                 )
@@ -1262,6 +1287,7 @@ class ImageView(QWidget):
                         if not self.is_brushing:
                             self._save_mask_to_history()
                         self.is_brushing = True
+                        self.is_actively_drawing = True  # Mark as actively drawing
                         self.brush_mode = "draw"
                         img_coords = self.widget_to_image_coords(event.x(), event.y())
                         if img_coords:
@@ -1279,6 +1305,7 @@ class ImageView(QWidget):
                     if not self.is_brushing:
                         self._save_mask_to_history()
                     self.is_brushing = True
+                    self.is_actively_drawing = True  # Mark as actively drawing
                     self.brush_mode = "erase"
                     img_coords = self.widget_to_image_coords(event.x(), event.y())
                     if img_coords:
@@ -1363,6 +1390,7 @@ class ImageView(QWidget):
             self.is_brushing and self.active_tool == "brush" and not self.space_pressed
         ):
             # Continue brush stroke while moving (only if space is not held)
+            self.is_actively_drawing = True  # Mark as actively drawing for performance
             img_coords = self.widget_to_image_coords(event.x(), event.y())
             if img_coords:
                 # Draw line from last position to current position for smooth strokes
@@ -1468,10 +1496,15 @@ class ImageView(QWidget):
         ):
             # Stop brushing
             self.is_brushing = False
+            self.is_actively_drawing = False  # No longer actively drawing
             self.last_brush_pos = None
             # Emit mask updated signal
             if self.current_mask is not None:
                 self.mask_updated.emit(self.current_mask)
+            # Do a final high-quality update now that drawing stopped
+            self.overlay_cache_valid = False
+            self.update_display()
+            self.update()
         elif (
             event.button() == Qt.LeftButton
             and self.is_drawing_bbox
@@ -1538,13 +1571,17 @@ class ImageView(QWidget):
             new_zoom = self.zoom_scale * zoom_factor
             # Limit max zoom (e.g., 50x for detailed inspection)
             if new_zoom <= 50.0:
-                self.zoom_in_at_position(widget_x, widget_y, zoom_factor)
+                self.zoom_in_at_position(
+                    widget_x, widget_y, zoom_factor, immediate=False
+                )
         elif angle_delta < 0:
             # Zoom out
             new_zoom = self.zoom_scale / zoom_factor
             # Allow zooming out further (minimum 0.1x zoom_scale)
             if new_zoom >= 0.1:
-                self.zoom_in_at_position(widget_x, widget_y, 1.0 / zoom_factor)
+                self.zoom_in_at_position(
+                    widget_x, widget_y, 1.0 / zoom_factor, immediate=False
+                )
 
         event.accept()
 
@@ -1607,7 +1644,13 @@ class ImageView(QWidget):
             self.update()
         super().keyReleaseEvent(event)
 
-    def zoom_in_at_position(self, widget_x: float, widget_y: float, zoom_factor: float):
+    def zoom_in_at_position(
+        self,
+        widget_x: float,
+        widget_y: float,
+        zoom_factor: float,
+        immediate: bool = True,
+    ):
         """
         Zoom in/out while keeping the point under the mouse cursor fixed
 
@@ -1615,8 +1658,76 @@ class ImageView(QWidget):
             widget_x: X position in widget coordinates
             widget_y: Y position in widget coordinates
             zoom_factor: Factor to zoom by (> 1.0 zooms in, < 1.0 zooms out)
+            immediate: If True, update display immediately. If False, use throttled update.
         """
-        if self.base_image is None or self.display_image is None:
+        if self.base_image is None:
+            return
+
+        # Store zoom parameters for delayed update if needed
+        if not immediate:
+            # Get image coordinates BEFORE updating zoom scale
+            # This is the point we want to keep under the cursor
+            img_coords = self.widget_to_image_coords(int(widget_x), int(widget_y))
+            if img_coords is None:
+                return
+
+            img_x, img_y = img_coords
+
+            # Store parameters for delayed update
+            self.pending_zoom_widget_x = widget_x
+            self.pending_zoom_widget_y = widget_y
+            self.pending_zoom_img_x = img_x
+            self.pending_zoom_img_y = img_y
+            self.pending_zoom_factor = zoom_factor
+            self.pending_zoom_update = True
+
+            # Update zoom scale immediately for smooth feel
+            self.zoom_scale *= zoom_factor
+            self.display_scale = self.base_scale * self.zoom_scale
+
+            # Do a quick display update with fast scaling to show zoom immediately
+            # This ensures the pan offset calculation uses the correct image size
+            self.update_display()
+
+            # Now calculate pan offset to keep cursor position fixed
+            # Use the image coordinates we got before zoom changed
+            h, w = self.base_image.shape[:2]
+            base_display_w = int(w * self.base_scale)
+            base_display_h = int(h * self.base_scale)
+            widget_w = self.width()
+            widget_h = self.height()
+
+            # Calculate new image offset (centering)
+            new_image_offset_x = (widget_w - base_display_w) // 2
+            new_image_offset_y = (widget_h - base_display_h) // 2
+
+            # Adjust for zoom
+            if self.zoom_scale > 1.0 and self.display_image is not None:
+                new_zoom_diff_w = (self.display_image.width() - base_display_w) // 2
+                new_zoom_diff_h = (self.display_image.height() - base_display_h) // 2
+                new_image_offset_x -= new_zoom_diff_w
+                new_image_offset_y -= new_zoom_diff_h
+
+            # Calculate where the image point should be after zoom
+            # We want: img_coord = (widget_x - new_total_offset) / new_scale
+            # So: new_total_offset = widget_x - img_coord * new_scale
+            new_total_offset_x = widget_x - img_x * self.display_scale
+            new_total_offset_y = widget_y - img_y * self.display_scale
+
+            # Calculate new pan offset to achieve this
+            self.pan_offset_x = new_total_offset_x - new_image_offset_x
+            self.pan_offset_y = new_total_offset_y - new_image_offset_y
+
+            # Restart timer to delay expensive display update (for quality improvement)
+            # This batches rapid zoom events together
+            self.zoom_update_timer.stop()
+            self.zoom_update_timer.start(50)  # 50ms delay - update after zoom stops
+
+            # Update display with correct positioning
+            self.update()
+            return
+
+        if self.display_image is None:
             return
 
         # Get image coordinates before zoom (this is what we want to keep under cursor)
@@ -1673,6 +1784,52 @@ class ImageView(QWidget):
         # Calculate new pan offset to achieve this
         self.pan_offset_x = new_total_offset_x - new_image_offset_x
         self.pan_offset_y = new_total_offset_y - new_image_offset_y
+
+        # Update display
+        self.update()
+
+    def _delayed_zoom_update(self):
+        """Perform the delayed zoom update after zoom has stopped"""
+        if not self.pending_zoom_update:
+            return
+
+        # Get stored zoom parameters (image coordinates were captured before zoom)
+        widget_x = getattr(self, "pending_zoom_widget_x", 0)
+        widget_y = getattr(self, "pending_zoom_widget_y", 0)
+        img_x = getattr(self, "pending_zoom_img_x", 0)
+        img_y = getattr(self, "pending_zoom_img_y", 0)
+
+        # Reset pending flag
+        self.pending_zoom_update = False
+
+        # Now do the full update with proper scaling
+        # Recalculate display image with new zoom
+        self.update_display()
+
+        # Recalculate pan offset to keep point under cursor
+        # Use the stored image coordinates (captured before zoom changed)
+        if self.display_image is not None and self.base_image is not None:
+            h, w = self.base_image.shape[:2]
+            base_display_w = int(w * self.base_scale)
+            base_display_h = int(h * self.base_scale)
+            widget_w = self.width()
+            widget_h = self.height()
+            new_image_offset_x = (widget_w - base_display_w) // 2
+            new_image_offset_y = (widget_h - base_display_h) // 2
+
+            if self.zoom_scale > 1.0:
+                new_zoom_diff_w = (self.display_image.width() - base_display_w) // 2
+                new_zoom_diff_h = (self.display_image.height() - base_display_h) // 2
+                new_image_offset_x -= new_zoom_diff_w
+                new_image_offset_y -= new_zoom_diff_h
+
+            # Calculate where the image point should be after zoom
+            new_total_offset_x = widget_x - img_x * self.display_scale
+            new_total_offset_y = widget_y - img_y * self.display_scale
+
+            # Calculate new pan offset to achieve this
+            self.pan_offset_x = new_total_offset_x - new_image_offset_x
+            self.pan_offset_y = new_total_offset_y - new_image_offset_y
 
         # Update display
         self.update()
