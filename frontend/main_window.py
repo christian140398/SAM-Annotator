@@ -137,7 +137,7 @@ def natural_sort_key(path: str) -> tuple:
     filename = os.path.basename(path)
     # Split filename into parts, converting numbers to integers for proper numeric comparison
     parts = []
-    for part in re.split(r'(\d+)', filename):
+    for part in re.split(r"(\d+)", filename):
         if part.isdigit():
             parts.append((0, int(part)))  # Numeric part - compare as integer
         else:
@@ -408,7 +408,7 @@ class MainWindow(QMainWindow):
             if filename.lower().endswith((".jpg", ".jpeg", ".png")):
                 full_path = os.path.join(IMG_DIR, filename)
                 image_files.append(full_path)
-        
+
         # Sort using natural/numeric sorting to handle f1, f2, f10 correctly
         # This ensures numbers in filenames are compared numerically, not alphabetically
         # This will sort f1, f2, f3... f10, f11... f35 in the correct order
@@ -420,8 +420,8 @@ class MainWindow(QMainWindow):
             # Print all images for debugging
             print("Image order:")
             for i, path in enumerate(self.image_paths):
-                print(f"  {i+1}. {os.path.basename(path)}")
-        
+                print(f"  {i + 1}. {os.path.basename(path)}")
+
         # Find the first unprocessed image (skip images that already exist in output folder)
         self.find_first_unprocessed_image()
 
@@ -433,31 +433,33 @@ class MainWindow(QMainWindow):
         if not self.image_paths:
             self.current_image_idx = 0
             return
-        
+
         # Check if output directory exists
         if not os.path.isdir(OUTPUT_IMG_DIR):
             # No output directory means no images have been processed
             self.current_image_idx = 0
             print("No output directory found - starting from first image")
             return
-        
+
         # Get list of already processed images (files in output/images folder)
         processed_images = set()
         if os.path.isdir(OUTPUT_IMG_DIR):
             for filename in os.listdir(OUTPUT_IMG_DIR):
                 if filename.lower().endswith((".jpg", ".jpeg", ".png")):
                     processed_images.add(filename.lower())
-        
+
         # Find first image that hasn't been processed
         for idx, img_path in enumerate(self.image_paths):
             img_filename = os.path.basename(img_path)
             if img_filename.lower() not in processed_images:
                 self.current_image_idx = idx
-                print(f"Found first unprocessed image: {img_filename} (index {idx + 1}/{len(self.image_paths)})")
+                print(
+                    f"Found first unprocessed image: {img_filename} (index {idx + 1}/{len(self.image_paths)})"
+                )
                 if processed_images:
                     print(f"Skipped {len(processed_images)} already processed image(s)")
                 return
-        
+
         # All images have been processed
         self.current_image_idx = len(self.image_paths) - 1
         print(f"All {len(self.image_paths)} images have already been processed")
@@ -971,6 +973,8 @@ class MainWindow(QMainWindow):
             self._segment_id_map = new_map
 
         self.update_segments_panel()
+        # Invalidate overlay cache because segment was deleted
+        self.image_view.overlay_cache_valid = False
         self.image_view.update_display()
         self.image_view.update()
 
@@ -993,6 +997,8 @@ class MainWindow(QMainWindow):
         ):
             self.image_view.finalized_labels[segment_idx] = label_id
 
+        # Invalidate overlay cache because label color changed
+        self.image_view.overlay_cache_valid = False
         self.image_view.update_display()
         self.image_view.update()
 
@@ -1389,8 +1395,43 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Warning", "No image loaded to save")
             return
 
-        # Finalize current segment
-        self.finalize_segment()
+        # Check if there's an active segment being drawn
+        if self.image_view.has_active_segment():
+            # Show dialog with options
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle("Active Segment")
+            msg_box.setText(
+                "You have an active segment being drawn. What would you like to do?"
+            )
+            msg_box.setIcon(QMessageBox.Question)
+
+            # Add custom buttons
+            finalize_btn = msg_box.addButton("Finalize Segment", QMessageBox.AcceptRole)
+            delete_btn = msg_box.addButton(
+                "Delete Segment", QMessageBox.DestructiveRole
+            )
+            cancel_btn = msg_box.addButton("Cancel", QMessageBox.RejectRole)
+
+            # Set default button
+            msg_box.setDefaultButton(cancel_btn)
+
+            # Show dialog and get result
+            msg_box.exec()
+            clicked_button = msg_box.clickedButton()
+
+            if clicked_button == cancel_btn:
+                # User cancelled, don't save
+                return
+            elif clicked_button == finalize_btn:
+                # Finalize the segment
+                self.finalize_segment()
+            elif clicked_button == delete_btn:
+                # Delete/clear the current segment
+                self.image_view.clear_current_segment()
+                self.update_segments_panel()
+        else:
+            # No active segment, just finalize (which will do nothing if no segment)
+            self.finalize_segment()
 
         # Process events to show UI updates before blocking operations
         if QApplication.instance() is not None:

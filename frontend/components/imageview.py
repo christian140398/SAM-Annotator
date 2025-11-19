@@ -74,6 +74,11 @@ class ImageView(QWidget):
         self.pan_offset_x = 0  # Pan offset (for dragging)
         self.pan_offset_y = 0  # Pan offset (for dragging)
 
+        # Performance optimization: cache overlay image
+        self.cached_overlay_image: Optional[np.ndarray] = None  # Cached overlay (BGR)
+        self.overlay_cache_valid = False  # Whether cache is up to date
+        self.last_zoom_scale = 1.0  # Track zoom changes for cache invalidation
+
         # Pan/zoom state
         self.is_panning = False
         self.last_pan_pos: Optional[QPoint] = None
@@ -460,6 +465,11 @@ class ImageView(QWidget):
         self.pan_offset_y = 0
         self.zoom_scale = 1.0
 
+        # Invalidate overlay cache when loading new image
+        self.overlay_cache_valid = False
+        self.cached_overlay_image = None
+        self.last_zoom_scale = 1.0
+
         # Show image immediately (before SAM processing)
         self.update_display()
         self.update()
@@ -546,6 +556,8 @@ class ImageView(QWidget):
     def set_hovered_segment_index(self, segment_index: Optional[int]):
         """Set the hovered segment index for highlighting"""
         self.hovered_segment_index = segment_index
+        # Invalidate cache because hover affects overlay rendering
+        self.overlay_cache_valid = False
         self.update_display()
         self.update()
 
@@ -682,7 +694,8 @@ class ImageView(QWidget):
                 self.current_mask, self.bounding_box, h, w
             )
 
-        # Update display
+        # Update display (invalidate cache when mask changes)
+        self.overlay_cache_valid = False
         self.update_display()
         self.update()
 
@@ -751,7 +764,8 @@ class ImageView(QWidget):
                 self.current_mask, self.bounding_box, h, w
             )
 
-        # Update display
+        # Update display (invalidate cache when mask changes)
+        self.overlay_cache_valid = False
         self.update_display()
         self.update()
 
@@ -838,7 +852,8 @@ class ImageView(QWidget):
         # Emit signal
         self.mask_updated.emit(mask)
 
-        # Update display
+        # Update display (invalidate cache when mask changes)
+        self.overlay_cache_valid = False
         self.update_display()
         self.update()
 
@@ -895,7 +910,8 @@ class ImageView(QWidget):
         # Emit signal
         self.segment_finalized.emit(self.finalized_masks[-1], self.current_label_id)
 
-        # Update display
+        # Update display (invalidate cache when mask changes)
+        self.overlay_cache_valid = False
         self.update_display()
         self.update()
 
@@ -915,7 +931,8 @@ class ImageView(QWidget):
             # Restore previous points state
             self.current_points = self.points_history.pop()
 
-            # Update display
+            # Update display (invalidate cache when mask changes)
+            self.overlay_cache_valid = False
             self.update_display()
             self.update()
             # Emit signal
@@ -1081,24 +1098,32 @@ class ImageView(QWidget):
 
         return overlay
 
-    def update_display(self):
-        """Update the display image with overlays"""
+    def update_display(self, force_rebuild_overlay: bool = False):
+        """
+        Update the display image with overlays
+
+        Args:
+            force_rebuild_overlay: If True, force rebuild of overlay cache even if valid
+        """
         if self.base_image is None:
             return
 
-        # Draw overlays
-        display_img = self.draw_overlay(self.base_image)
+        # Check if we need to rebuild overlay cache
+        # Rebuild if: cache invalid, force rebuild, or zoom changed significantly
+        zoom_changed = abs(self.zoom_scale - self.last_zoom_scale) > 0.1
 
-        # Convert BGR to RGB for QImage
-        rgb_img = cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB)
+        if not self.overlay_cache_valid or force_rebuild_overlay or zoom_changed:
+            # Draw overlays (this is expensive, so we cache it)
+            self.cached_overlay_image = self.draw_overlay(self.base_image)
+            self.overlay_cache_valid = True
+            self.last_zoom_scale = self.zoom_scale
 
-        # Create QImage
-        h, w = rgb_img.shape[:2]
-        q_image = QImage(rgb_img.data, w, h, w * 3, QImage.Format_RGB888)
+        display_img = self.cached_overlay_image
 
         # Calculate base scale to fit widget (never upscales from this)
         widget_w = self.width()
         widget_h = self.height()
+        h, w = display_img.shape[:2]
 
         if widget_w > 1 and widget_h > 1:
             scale_w = widget_w / w
@@ -1111,11 +1136,27 @@ class ImageView(QWidget):
             new_w = int(w * self.display_scale)
             new_h = int(h * self.display_scale)
 
-            # Create scaled pixmap
-            self.display_image = QPixmap.fromImage(q_image).scaled(
-                new_w, new_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
-            )
+            # Convert BGR to RGB for QImage
+            rgb_img = cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB)
+            q_image = QImage(rgb_img.data, w, h, w * 3, QImage.Format_RGB888)
+
+            # Performance optimization: use faster scaling for very large images
+            # When zoomed in a lot, the image is very large, so use FastTransformation
+            # This is much faster than SmoothTransformation for large images
+            if new_w > 3000 or new_h > 3000 or self.zoom_scale > 3.0:
+                # For very large images or high zoom, use FastTransformation
+                # The quality difference is minimal when zoomed in
+                self.display_image = QPixmap.fromImage(q_image).scaled(
+                    new_w, new_h, Qt.KeepAspectRatio, Qt.FastTransformation
+                )
+            else:
+                # Use smooth transformation for normal zoom levels
+                self.display_image = QPixmap.fromImage(q_image).scaled(
+                    new_w, new_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                )
         else:
+            rgb_img = cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB)
+            q_image = QImage(rgb_img.data, w, h, w * 3, QImage.Format_RGB888)
             self.display_image = QPixmap.fromImage(q_image)
             self.base_scale = 1.0
             self.display_scale = self.base_scale * self.zoom_scale
@@ -1316,7 +1357,7 @@ class ImageView(QWidget):
             # Update last position
             self.last_pan_pos = event.pos()
 
-            # Redraw
+            # Redraw (no need to rebuild overlay cache when just panning)
             self.update()
         elif (
             self.is_brushing and self.active_tool == "brush" and not self.space_pressed
@@ -1398,7 +1439,8 @@ class ImageView(QWidget):
 
                 # Update bounding box
                 self.bounding_box = (xmin, ymin, xmax, ymax)
-                # Update display
+                # Update display (invalidate cache when bbox changes)
+                self.overlay_cache_valid = False
                 self.update_display()
                 self.update()
         else:
@@ -1445,7 +1487,8 @@ class ImageView(QWidget):
             self.bbox_start_pos = None
             self.bbox_current_pos = None
             self.temp_bbox = None
-            # Update display
+            # Update display (invalidate cache when bbox changes)
+            self.overlay_cache_valid = False
             self.update_display()
             self.update()
         elif (
@@ -1463,7 +1506,8 @@ class ImageView(QWidget):
             self.bbox_resize_original_bbox = None
             # Update cursor
             self.update_cursor()
-            # Update display
+            # Update display (invalidate cache when bbox changes)
+            self.overlay_cache_valid = False
             self.update_display()
             self.update()
         super().mouseReleaseEvent(event)
@@ -1529,6 +1573,8 @@ class ImageView(QWidget):
         elif event.key() == Qt.Key_H and not event.isAutoRepeat():
             # Only process initial key press, not auto-repeat
             self.h_pressed = True
+            # Invalidate cache because H highlight affects overlay rendering
+            self.overlay_cache_valid = False
             # Regenerate display image with highlight and trigger redraw
             self.update_display()
             self.update()
@@ -1554,6 +1600,8 @@ class ImageView(QWidget):
         elif event.key() == Qt.Key_H and not event.isAutoRepeat():
             # Only process actual key release, not auto-repeat release
             self.h_pressed = False
+            # Invalidate cache because H highlight affects overlay rendering
+            self.overlay_cache_valid = False
             # Regenerate display image without highlight and trigger redraw
             self.update_display()
             self.update()
@@ -1599,7 +1647,8 @@ class ImageView(QWidget):
         self.zoom_scale *= zoom_factor
         self.display_scale = self.base_scale * self.zoom_scale
 
-        # Recalculate display image with new zoom
+        # Recalculate display image with new zoom (don't rebuild overlay, just recalc viewport)
+        # Overlay cache stays valid, only viewport/scaling changes
         self.update_display()
 
         # Recalculate new image offset (will be adjusted in paintEvent, but we need it now)
@@ -1662,6 +1711,28 @@ class ImageView(QWidget):
         self.finalized_labels = []
         self.current_points = []
         self.current_mask = None
+        self.update_display()
+        self.update()
+
+    def has_active_segment(self) -> bool:
+        """
+        Check if there's an active segment being drawn (has points or mask)
+
+        Returns:
+            True if there's an active segment, False otherwise
+        """
+        return (self.current_mask is not None and self.current_mask.sum() > 0) or len(
+            self.current_points
+        ) > 0
+
+    def clear_current_segment(self):
+        """Clear the current segment being drawn (without finalizing)"""
+        self.current_points = []
+        self.current_mask = None
+        self.mask_history = []
+        self.points_history = []
+        # Invalidate cache because we're removing the current segment
+        self.overlay_cache_valid = False
         self.update_display()
         self.update()
 
@@ -1770,7 +1841,8 @@ class ImageView(QWidget):
         self.pan_offset_x = widget_center_x - bbox_center_in_widget_x
         self.pan_offset_y = widget_center_y - bbox_center_in_widget_y
 
-        # Update display
+        # Update display (invalidate cache when mask changes)
+        self.overlay_cache_valid = False
         self.update_display()
         self.update()
 
