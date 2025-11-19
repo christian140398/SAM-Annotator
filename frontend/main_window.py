@@ -201,8 +201,11 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("SAM Annotator")
-        # Window will open in fullscreen, geometry set as fallback
+        # Set minimum size to ensure window can be resized from all sides
+        self.setMinimumSize(800, 600)
+        # Window will open in windowed mode, geometry set as initial size
         self.setGeometry(100, 100, 1400, 900)
+        # Ensure window is resizable (QMainWindow is resizable by default)
 
         # Set main window background color
         self.setStyleSheet(get_main_window_style())
@@ -349,8 +352,8 @@ class MainWindow(QMainWindow):
         # Install event filter on application to capture space key events globally
         QApplication.instance().installEventFilter(self)
 
-        # Show window in fullscreen mode
-        self.showFullScreen()
+        # Show window in windowed mode
+        self.show()
 
         # Load first image if available (do this after show() so widget is ready)
         if self.image_paths:
