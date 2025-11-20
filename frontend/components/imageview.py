@@ -2578,6 +2578,9 @@ class ImageView(QWidget):
         self.mask_history = []
         self.points_history = []
 
+        # Update label indicator to show the correct label
+        self.update_label_indicator()
+
         # Invalidate cache to update display
         self.overlay_cache_valid = False
         self.update_display()
