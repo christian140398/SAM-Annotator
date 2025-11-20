@@ -20,10 +20,10 @@ from PySide6.QtWidgets import (  # type: ignore[import-untyped]
     QDialog,
     QDialogButtonBox,
     QLabel,
-) 
+)
 
-from PySide6.QtGui import QKeySequence, QShortcut, QKeyEvent # type: ignore
-from PySide6.QtCore import Qt, QEvent, QThread, QObject, Signal # type: ignore
+from PySide6.QtGui import QKeySequence, QShortcut, QKeyEvent  # type: ignore
+from PySide6.QtCore import Qt, QEvent, QThread, QObject, Signal  # type: ignore
 import cv2
 import numpy as np
 from frontend.theme import get_main_window_style, ITEM_BG

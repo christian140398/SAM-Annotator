@@ -15,7 +15,15 @@ from PySide6.QtWidgets import (
     QApplication,
 )
 from PySide6.QtCore import Qt, Signal, QPoint, QThread, QObject, QTimer
-from PySide6.QtGui import QImage, QPixmap, QPainter, QColor, QWheelEvent, QKeyEvent, QCursor
+from PySide6.QtGui import (
+    QImage,
+    QPixmap,
+    QPainter,
+    QColor,
+    QWheelEvent,
+    QKeyEvent,
+    QCursor,
+)
 from frontend.theme import CANVAS_BG, ITEM_BORDER, TEXT_COLOR, ITEM_BG
 from segmentation.sam_model import SAMModel
 
@@ -69,7 +77,9 @@ class ImageView(QWidget):
         self.base_scale = 1.0  # Base scale to fit widget (never upscales)
         self.zoom_scale = 1.0  # Additional zoom scale (can be > 1.0)
         self.display_scale = 1.0  # Combined scale = base_scale * zoom_scale
-        self.actual_display_scale = 1.0  # Actual scale used after capping (for coordinate calculations)
+        self.actual_display_scale = (
+            1.0  # Actual scale used after capping (for coordinate calculations)
+        )
         self.image_offset_x = 0  # Centering offset (for base scale)
         self.image_offset_y = 0  # Centering offset (for base scale)
         self.pan_offset_x = 0  # Pan offset (for dragging)
@@ -92,7 +102,7 @@ class ImageView(QWidget):
         self.pending_zoom_img_x = 0
         self.pending_zoom_img_y = 0
         self.pending_zoom_factor = 1.0
-        
+
         # Performance: track if we're at very high zoom for additional optimizations
         self.is_very_high_zoom = False  # True when zoom_scale > 5.0
 
@@ -369,9 +379,11 @@ class ImageView(QWidget):
         self, widget_x: Optional[int] = None, widget_y: Optional[int] = None
     ):
         """Update cursor based on active tool and SAM ready state"""
-        # If SAM is not ready, show "not allowed" cursor for segmentation and brush
+        # If SAM is not ready, show "not allowed" cursor for segmentation, brush, and bbox
         if not self.sam_ready and (
-            self.active_tool == "segment" or self.active_tool == "brush"
+            self.active_tool == "segment"
+            or self.active_tool == "brush"
+            or self.active_tool == "bbox"
         ):
             self.setCursor(Qt.ForbiddenCursor)
         elif self.active_tool == "pan":
@@ -394,6 +406,8 @@ class ImageView(QWidget):
                             self.setCursor(Qt.SizeHorCursor)  # Horizontal resize
                     else:
                         self.setCursor(Qt.CrossCursor)
+                else:
+                    self.setCursor(Qt.CrossCursor)
             else:
                 self.setCursor(Qt.CrossCursor)
         elif self.active_tool == "brush":
@@ -607,44 +621,44 @@ class ImageView(QWidget):
 
         # Convert widget coords to image coords accounting for scaling, centering, and pan
         # Use actual_display_scale if it's been set (when display size was capped), otherwise use display_scale
-        scale_to_use = getattr(self, 'actual_display_scale', self.display_scale)
+        scale_to_use = getattr(self, "actual_display_scale", self.display_scale)
         if scale_to_use <= 0:
             scale_to_use = self.display_scale
-        
+
         # Account for viewport offset if using viewport rendering
         # When viewport rendering is active, the display_image is cropped and drawn centered
-        viewport_offset_x = getattr(self, 'viewport_offset_x', 0)
-        viewport_offset_y = getattr(self, 'viewport_offset_y', 0)
-        
+        viewport_offset_x = getattr(self, "viewport_offset_x", 0)
+        viewport_offset_y = getattr(self, "viewport_offset_y", 0)
+
         if viewport_offset_x != 0 or viewport_offset_y != 0:
             # Viewport rendering is active
             # The viewport image is a cropped portion of the full image, scaled and drawn centered
             # The viewport represents full image region [viewport_offset_x, viewport_offset_y] to [x2, y2]
-            # 
+            #
             # To convert widget coords to full image coords:
             # 1. Convert widget coords to viewport image coords (accounting for draw position and scale)
             # 2. Add viewport_offset to get full image coords
             #
             # The viewport image is drawn at image_offset_x/y (centered)
             # The actual scale is determined by the actual QPixmap size vs the viewport image size
-            
+
             # Use the actual scale that was applied to the viewport image
             # This should match the scale used in update_display
-            viewport_scale = getattr(self, 'actual_display_scale', self.display_scale)
+            viewport_scale = getattr(self, "actual_display_scale", self.display_scale)
             if viewport_scale <= 0:
                 viewport_scale = self.display_scale
-            
+
             # The viewport image is drawn centered at image_offset_x/y
             # Widget coordinates relative to the draw position
             rel_x = widget_x - self.image_offset_x
             rel_y = widget_y - self.image_offset_y
-            
+
             # Convert to viewport image coordinates (in image space)
             # The viewport image was scaled from its original size using viewport_scale
             # So: viewport_img_coord = widget_rel_coord / viewport_scale
             viewport_img_x = rel_x / viewport_scale if viewport_scale > 0 else 0
             viewport_img_y = rel_y / viewport_scale if viewport_scale > 0 else 0
-            
+
             # Convert to full image coordinates by adding the viewport offset
             img_x = int(viewport_img_x + viewport_offset_x)
             img_y = int(viewport_img_y + viewport_offset_y)
@@ -655,24 +669,22 @@ class ImageView(QWidget):
             h, w = self.base_image.shape[:2]
             base_display_w = int(w * self.base_scale)
             base_display_h = int(h * self.base_scale)
-            widget_w = self.width()
-            widget_h = self.height()
-            
+
             # Start with base image offset
             image_offset_x = self.image_offset_x
             image_offset_y = self.image_offset_y
-            
+
             # Adjust for zoom (matching paintEvent)
             if self.zoom_scale > 1.0 and self.display_image is not None:
                 zoom_diff_w = (self.display_image.width() - base_display_w) // 2
                 zoom_diff_h = (self.display_image.height() - base_display_h) // 2
                 image_offset_x -= zoom_diff_w
                 image_offset_y -= zoom_diff_h
-            
+
             # Add pan offset (matching paintEvent)
             total_offset_x = image_offset_x + self.pan_offset_x
             total_offset_y = image_offset_y + self.pan_offset_y
-            
+
             img_x = int((widget_x - total_offset_x) / scale_to_use)
             img_y = int((widget_y - total_offset_y) / scale_to_use)
 
@@ -698,12 +710,10 @@ class ImageView(QWidget):
 
         xmin, ymin, xmax, ymax = self.bounding_box
         # Use actual_display_scale if available (when display was capped), otherwise display_scale
-        scale_to_use = getattr(self, 'actual_display_scale', self.display_scale)
+        scale_to_use = getattr(self, "actual_display_scale", self.display_scale)
         if scale_to_use <= 0:
             scale_to_use = self.display_scale
-        threshold = (
-            self.EDGE_DETECTION_THRESHOLD / scale_to_use
-        )  # Adjust for zoom
+        threshold = self.EDGE_DETECTION_THRESHOLD / scale_to_use  # Adjust for zoom
 
         # Check top edge
         if abs(img_y - ymin) <= threshold and xmin <= img_x <= xmax:
@@ -767,7 +777,7 @@ class ImageView(QWidget):
         # Calculate brush size in image coordinates (adjusted for current zoom)
         # Brush size should appear consistent regardless of zoom level
         # Use actual_display_scale if available (when display was capped), otherwise display_scale
-        scale_to_use = getattr(self, 'actual_display_scale', self.display_scale)
+        scale_to_use = getattr(self, "actual_display_scale", self.display_scale)
         if scale_to_use <= 0:
             scale_to_use = self.display_scale
         brush_radius = (
@@ -830,7 +840,7 @@ class ImageView(QWidget):
 
         # Calculate brush size in image coordinates
         # Use actual_display_scale if available (when display was capped), otherwise display_scale
-        scale_to_use = getattr(self, 'actual_display_scale', self.display_scale)
+        scale_to_use = getattr(self, "actual_display_scale", self.display_scale)
         if scale_to_use <= 0:
             scale_to_use = self.display_scale
         brush_radius = (
@@ -1211,12 +1221,11 @@ class ImageView(QWidget):
         if self.temp_bbox is not None:
             xmin, ymin, xmax, ymax = self.temp_bbox
             color = (0, 255, 0)  # Green in BGR for temporary bbox
-            thickness = 2
+            thickness = 1  # Match the red bounding box thickness
             # Draw rectangle outline
             cv2.rectangle(overlay, (xmin, ymin), (xmax, ymax), color, thickness)
 
         return overlay
-
 
     def update_display(self, force_rebuild_overlay: bool = False):
         """
@@ -1234,15 +1243,23 @@ class ImageView(QWidget):
         # Also, don't rebuild overlay during active zoom (when timer is running) - wait until zoom stops
         zoom_threshold = 0.3 if self.zoom_scale > 5.0 else 0.15
         zoom_changed = abs(self.zoom_scale - self.last_zoom_scale) > zoom_threshold
-        
+
         # Track very high zoom state for performance optimizations
         self.is_very_high_zoom = self.zoom_scale > 5.0
-        
+
         # Skip overlay rebuild if zoom is actively happening (timer running) - this reduces stutter
         # Only rebuild if zoom has stopped or changed significantly
-        is_zooming = self.zoom_update_timer.isActive() if hasattr(self, 'zoom_update_timer') else False
+        is_zooming = (
+            self.zoom_update_timer.isActive()
+            if hasattr(self, "zoom_update_timer")
+            else False
+        )
 
-        if (not self.overlay_cache_valid or force_rebuild_overlay or (zoom_changed and not is_zooming)):
+        if (
+            not self.overlay_cache_valid
+            or force_rebuild_overlay
+            or (zoom_changed and not is_zooming)
+        ):
             # Draw overlays (this is expensive, so we cache it)
             self.cached_overlay_image = self.draw_overlay(self.base_image)
             self.overlay_cache_valid = True
@@ -1280,11 +1297,11 @@ class ImageView(QWidget):
                 # This ensures the viewport calculation is consistent
                 full_image_base_offset_x = (widget_w - base_display_w) // 2
                 full_image_base_offset_y = (widget_h - base_display_h) // 2
-                
+
                 # Estimate zoomed full image size for offset calculation
                 estimated_zoom_w = int(w * self.display_scale)
                 estimated_zoom_h = int(h * self.display_scale)
-                
+
                 # Adjust for zoom (estimate for full image)
                 full_image_offset_x = full_image_base_offset_x
                 full_image_offset_y = full_image_base_offset_y
@@ -1293,43 +1310,55 @@ class ImageView(QWidget):
                     zoom_diff_h = (estimated_zoom_h - base_display_h) // 2
                     full_image_offset_x -= zoom_diff_w
                     full_image_offset_y -= zoom_diff_h
-                
+
                 # Calculate what portion of FULL image is visible
                 # Use full image offsets + pan_offset to determine visible area
                 scale_to_use = self.display_scale
                 center_widget_x = widget_w / 2.0
                 center_widget_y = widget_h / 2.0
-                
+
                 # Calculate where widget center maps to in FULL image coordinates
                 # This uses the full image's offsets + pan_offset
                 total_full_offset_x = full_image_offset_x + self.pan_offset_x
                 total_full_offset_y = full_image_offset_y + self.pan_offset_y
-                center_img_x = (center_widget_x - total_full_offset_x) / scale_to_use if scale_to_use > 0 else w / 2
-                center_img_y = (center_widget_y - total_full_offset_y) / scale_to_use if scale_to_use > 0 else h / 2
-                
+                center_img_x = (
+                    (center_widget_x - total_full_offset_x) / scale_to_use
+                    if scale_to_use > 0
+                    else w / 2
+                )
+                center_img_y = (
+                    (center_widget_y - total_full_offset_y) / scale_to_use
+                    if scale_to_use > 0
+                    else h / 2
+                )
+
                 # Calculate viewport around this center
                 visible_w = widget_w / scale_to_use if scale_to_use > 0 else w
                 visible_h = widget_h / scale_to_use if scale_to_use > 0 else h
-                
+
                 img_x1 = int(center_img_x - visible_w / 2)
                 img_y1 = int(center_img_y - visible_h / 2)
                 img_x2 = int(center_img_x + visible_w / 2)
                 img_y2 = int(center_img_y + visible_h / 2)
-                
+
                 # Add padding to avoid edge artifacts
                 padding = 100  # pixels in image space
                 img_x1 = max(0, img_x1 - padding)
                 img_y1 = max(0, img_y1 - padding)
                 img_x2 = min(w, img_x2 + padding)
                 img_y2 = min(h, img_y2 + padding)
-                
+
                 # Only use viewport if it's significantly smaller than full image
                 viewport_area = (img_x2 - img_x1) * (img_y2 - img_y1)
                 full_area = w * h
-                if viewport_area < full_area * 0.5 and img_x2 > img_x1 and img_y2 > img_y1:
+                if (
+                    viewport_area < full_area * 0.5
+                    and img_x2 > img_x1
+                    and img_y2 > img_y1
+                ):
                     # Only use viewport if it's less than 50% of image and valid
                     viewport = (img_x1, img_y1, img_x2, img_y2)
-            
+
             if viewport is not None:
                 # Crop to visible viewport
                 x1, y1, x2, y2 = viewport
@@ -1348,7 +1377,7 @@ class ImageView(QWidget):
                     self._viewport_needs_offset_recalc = True
                 else:
                     viewport = None
-            
+
             if viewport is None:
                 # No viewport cropping
                 self.viewport_offset_x = 0
@@ -1371,7 +1400,7 @@ class ImageView(QWidget):
                 MAX_DISPLAY_SIZE = 15000  # Medium limit for high zoom
             else:
                 MAX_DISPLAY_SIZE = 10000  # Standard limit for normal zoom
-            
+
             if new_w > MAX_DISPLAY_SIZE or new_h > MAX_DISPLAY_SIZE:
                 # Scale down to max size while maintaining aspect ratio
                 scale_factor = min(MAX_DISPLAY_SIZE / new_w, MAX_DISPLAY_SIZE / new_h)
@@ -1383,11 +1412,13 @@ class ImageView(QWidget):
             else:
                 # No capping needed, use the full display_scale
                 self.actual_display_scale = self.display_scale
-            
+
             # If viewport rendering is active, we'll recalculate image_offset_x/y after QPixmap is created
             # This is because the actual QPixmap size may differ from new_w/new_h due to aspect ratio
-            viewport_needs_offset_recalc = getattr(self, '_viewport_needs_offset_recalc', False)
-            
+            viewport_needs_offset_recalc = getattr(
+                self, "_viewport_needs_offset_recalc", False
+            )
+
             # Convert BGR to RGB for QImage
             rgb_img = cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB)
             q_image = QImage(rgb_img.data, w, h, w * 3, QImage.Format_RGB888)
@@ -1399,7 +1430,11 @@ class ImageView(QWidget):
             # Lower thresholds for better performance at high zoom levels
             # At very high zoom, always use fast transformation
             # Also use fast transformation during active zoom (when timer is running)
-            is_zooming = self.zoom_update_timer.isActive() if hasattr(self, 'zoom_update_timer') else False
+            is_zooming = (
+                self.zoom_update_timer.isActive()
+                if hasattr(self, "zoom_update_timer")
+                else False
+            )
             if (
                 new_w > 2000
                 or new_h > 2000
@@ -1418,7 +1453,7 @@ class ImageView(QWidget):
                 self.display_image = QPixmap.fromImage(q_image).scaled(
                     new_w, new_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
                 )
-            
+
             # If viewport rendering is active, recalculate image_offset_x/y using actual QPixmap size
             # The actual size may differ from new_w/new_h due to aspect ratio preservation
             if viewport_needs_offset_recalc and self.display_image is not None:
@@ -1458,18 +1493,15 @@ class ImageView(QWidget):
                 base_display_w = self.display_image.width()
                 base_display_h = self.display_image.height()
 
-            widget_w = self.width()
-            widget_h = self.height()
-
             # Base centering offset (centers image at base_scale)
             # Use the offsets calculated in update_display
             image_offset_x = self.image_offset_x
             image_offset_y = self.image_offset_y
 
             # Check if viewport rendering is active
-            viewport_offset_x = getattr(self, 'viewport_offset_x', 0)
-            viewport_offset_y = getattr(self, 'viewport_offset_y', 0)
-            
+            viewport_offset_x = getattr(self, "viewport_offset_x", 0)
+            viewport_offset_y = getattr(self, "viewport_offset_y", 0)
+
             if viewport_offset_x == 0 and viewport_offset_y == 0:
                 # No viewport rendering - standard zoom adjustment
                 if self.zoom_scale > 1.0:
@@ -1484,9 +1516,9 @@ class ImageView(QWidget):
                 pass
 
             # Apply pan offset
-            viewport_offset_x = getattr(self, 'viewport_offset_x', 0)
-            viewport_offset_y = getattr(self, 'viewport_offset_y', 0)
-            
+            viewport_offset_x = getattr(self, "viewport_offset_x", 0)
+            viewport_offset_y = getattr(self, "viewport_offset_y", 0)
+
             if viewport_offset_x != 0 or viewport_offset_y != 0:
                 # Viewport rendering is active
                 # The viewport already represents what's visible based on pan_offset
@@ -1607,8 +1639,8 @@ class ImageView(QWidget):
             and self.active_tool == "bbox"
             and not self.space_pressed
         ):
-            # Left click: start drawing bounding box
-            if self.base_image is not None:
+            # Left click: start drawing bounding box (only if SAM is ready)
+            if self.sam_ready and self.base_image is not None:
                 self.is_drawing_bbox = True
                 self.bbox_start_pos = (event.x(), event.y())
                 self.bbox_current_pos = (event.x(), event.y())
@@ -1618,8 +1650,12 @@ class ImageView(QWidget):
             and self.active_tool == "bbox"
             and not self.space_pressed
         ):
-            # Right click: check if clicking on bounding box edge to resize
-            if self.base_image is not None and self.bounding_box is not None:
+            # Right click: check if clicking on bounding box edge to resize (only if SAM is ready)
+            if (
+                self.sam_ready
+                and self.base_image is not None
+                and self.bounding_box is not None
+            ):
                 img_coords = self.widget_to_image_coords(event.x(), event.y())
                 if img_coords:
                     edge = self._detect_bbox_edge(img_coords[0], img_coords[1])
@@ -1659,7 +1695,19 @@ class ImageView(QWidget):
             # Update last position
             self.last_pan_pos = event.pos()
 
-            # Redraw (no need to rebuild overlay cache when just panning)
+            # When viewport rendering is active, we need to recalculate the viewport
+            # based on the new pan offset. Otherwise, just redraw.
+            viewport_offset_x = getattr(self, "viewport_offset_x", 0)
+            viewport_offset_y = getattr(self, "viewport_offset_y", 0)
+            is_viewport_active = viewport_offset_x != 0 or viewport_offset_y != 0
+            will_use_viewport = self.zoom_scale > 10.0
+
+            if is_viewport_active or will_use_viewport:
+                # Viewport rendering is active - need to recalculate viewport
+                # Don't rebuild overlay cache (it's still valid, just need new viewport)
+                self.update_display()
+
+            # Always trigger repaint to show the new pan position
             self.update()
         elif (
             self.is_brushing and self.active_tool == "brush" and not self.space_pressed
@@ -1703,6 +1751,8 @@ class ImageView(QWidget):
                     xmax = max(x1, x2)
                     ymax = max(y1, y2)
                     self.temp_bbox = (xmin, ymin, xmax, ymax)
+                    # Invalidate overlay cache so temp_bbox is drawn
+                    self.overlay_cache_valid = False
                     # Update display to show temporary bbox
                     self.update_display()
                     self.update()
@@ -1849,7 +1899,7 @@ class ImageView(QWidget):
                 # Already at max zoom, don't process zoom in events
                 event.accept()
                 return
-            
+
             new_zoom = self.zoom_scale * zoom_factor
             # Limit max zoom (200x for very detailed inspection)
             if new_zoom <= MAX_ZOOM:
@@ -1984,6 +2034,7 @@ class ImageView(QWidget):
             self.display_scale = self.base_scale * self.zoom_scale
 
             # Calculate new pan offset to keep the same image point under the cursor
+            # IMPORTANT: Calculate pan offset BEFORE update_display() so the viewport uses correct pan offset
             # The key insight: before zoom, widget_x maps to img_x via:
             #   img_x = (widget_x - total_offset_x_old) / old_scale
             #   where total_offset_x_old = image_offset_x_old (with zoom adj) + pan_offset_x_old
@@ -1992,38 +2043,140 @@ class ImageView(QWidget):
             #   where total_offset_x_new = image_offset_x_new (with zoom adj) + pan_offset_x_new
             # Solving: total_offset_x_new = widget_x - img_x * new_scale
             # So: pan_offset_x_new = total_offset_x_new - image_offset_x_new (with zoom adj)
-            
-            # First update display to get the new image size and offsets
-            self.update_display()
-            
-            # Now calculate the actual draw offset (matching paintEvent and widget_to_image_coords)
-            h, w = self.base_image.shape[:2]
-            base_display_w = int(w * self.base_scale)
-            base_display_h = int(h * self.base_scale)
-            
-            # Calculate new image offset (base centering)
-            new_image_offset_x = self.image_offset_x
-            new_image_offset_y = self.image_offset_y
-            
-            # Adjust for zoom (matching paintEvent logic)
-            if self.zoom_scale > 1.0 and self.display_image is not None:
-                zoom_diff_w = (self.display_image.width() - base_display_w) // 2
-                zoom_diff_h = (self.display_image.height() - base_display_h) // 2
-                new_image_offset_x -= zoom_diff_w
-                new_image_offset_y -= zoom_diff_h
-            
-            # Use actual_display_scale if available (when display was capped), otherwise display_scale
-            scale_to_use = getattr(self, 'actual_display_scale', self.display_scale)
-            if scale_to_use <= 0:
+
+            # Check if viewport rendering will be active
+            will_use_viewport = self.zoom_scale > 10.0
+
+            if will_use_viewport:
+                # Viewport rendering will be active
+                # Pan offset affects which part of the image is in the viewport
+                # The viewport center is: center_img = (widget_center - full_image_offset - pan_offset) / display_scale
+                # We want img_x to appear at widget_x
+                # So: img_x = center_img + (widget_x - widget_center) / display_scale
+                # Therefore: center_img = img_x - (widget_x - widget_center) / display_scale
+                # And: pan_offset = widget_center - full_image_offset - center_img * display_scale
+
+                h, w = self.base_image.shape[:2]
+                base_display_w = int(w * self.base_scale)
+                base_display_h = int(h * self.base_scale)
+                widget_w = self.width()
+                widget_h = self.height()
+
+                # Calculate full image offset (matching update_display viewport calculation)
+                full_image_base_offset_x = (widget_w - base_display_w) // 2
+                full_image_base_offset_y = (widget_h - base_display_h) // 2
+
+                # Estimate zoomed full image size for offset calculation
+                estimated_zoom_w = int(w * self.display_scale)
+                estimated_zoom_h = int(h * self.display_scale)
+
+                # Adjust for zoom
+                full_image_offset_x = full_image_base_offset_x
+                full_image_offset_y = full_image_base_offset_y
+                if self.zoom_scale > 1.0:
+                    zoom_diff_w = (estimated_zoom_w - base_display_w) // 2
+                    zoom_diff_h = (estimated_zoom_h - base_display_h) // 2
+                    full_image_offset_x -= zoom_diff_w
+                    full_image_offset_y -= zoom_diff_h
+
+                # Calculate desired viewport center so that img_x appears at widget_x
+                widget_center_x = widget_w / 2.0
+                widget_center_y = widget_h / 2.0
+                desired_viewport_center_x = (
+                    img_x - (widget_x - widget_center_x) / self.display_scale
+                    if self.display_scale > 0
+                    else img_x
+                )
+                desired_viewport_center_y = (
+                    img_y - (widget_y - widget_center_y) / self.display_scale
+                    if self.display_scale > 0
+                    else img_y
+                )
+
+                # Calculate pan offset to achieve this viewport center
+                self.pan_offset_x = (
+                    widget_center_x
+                    - full_image_offset_x
+                    - desired_viewport_center_x * self.display_scale
+                )
+                self.pan_offset_y = (
+                    widget_center_y
+                    - full_image_offset_y
+                    - desired_viewport_center_y * self.display_scale
+                )
+            else:
+                # No viewport rendering - standard calculation
+                # Estimate the new image offset and pan offset
+                h, w = self.base_image.shape[:2]
+                base_display_w = int(w * self.base_scale)
+                base_display_h = int(h * self.base_scale)
+                widget_w = self.width()
+                widget_h = self.height()
+
+                # Calculate base image offset
+                base_image_offset_x = (widget_w - base_display_w) // 2
+                base_image_offset_y = (widget_h - base_display_h) // 2
+
+                # Estimate zoomed image size
+                estimated_zoom_w = int(w * self.display_scale)
+                estimated_zoom_h = int(h * self.display_scale)
+
+                # Estimate new image offset (with zoom adjustment)
+                new_image_offset_x = base_image_offset_x
+                new_image_offset_y = base_image_offset_y
+                if self.zoom_scale > 1.0:
+                    zoom_diff_w = (estimated_zoom_w - base_display_w) // 2
+                    zoom_diff_h = (estimated_zoom_h - base_display_h) // 2
+                    new_image_offset_x -= zoom_diff_w
+                    new_image_offset_y -= zoom_diff_h
+
+                # Use display_scale for initial calculation (will refine after update_display if capped)
                 scale_to_use = self.display_scale
-            
-            # Calculate total offset needed to position img_x at widget_x
-            total_offset_x_needed = widget_x - img_x * scale_to_use
-            total_offset_y_needed = widget_y - img_y * scale_to_use
-            
-            # Calculate pan offset to achieve this
-            self.pan_offset_x = total_offset_x_needed - new_image_offset_x
-            self.pan_offset_y = total_offset_y_needed - new_image_offset_y
+
+                # Calculate total offset needed to position img_x at widget_x
+                total_offset_x_needed = widget_x - img_x * scale_to_use
+                total_offset_y_needed = widget_y - img_y * scale_to_use
+
+                # Calculate pan offset to achieve this
+                self.pan_offset_x = total_offset_x_needed - new_image_offset_x
+                self.pan_offset_y = total_offset_y_needed - new_image_offset_y
+
+            # Now update display with the correct pan offset
+            self.update_display()
+
+            # Refine pan offset if display was capped (actual_display_scale differs from display_scale)
+            scale_to_use = getattr(self, "actual_display_scale", self.display_scale)
+            if (
+                scale_to_use != self.display_scale
+                and scale_to_use > 0
+                and not will_use_viewport
+            ):
+                # Scale was capped, recalculate pan offset with actual scale
+                h, w = self.base_image.shape[:2]
+                base_display_w = int(w * self.base_scale)
+                base_display_h = int(h * self.base_scale)
+                widget_w = self.width()
+                widget_h = self.height()
+
+                if self.display_image is not None:
+                    actual_display_w = self.display_image.width()
+                    actual_display_h = self.display_image.height()
+                    base_image_offset_x = (widget_w - base_display_w) // 2
+                    base_image_offset_y = (widget_h - base_display_h) // 2
+
+                    new_image_offset_x = base_image_offset_x
+                    new_image_offset_y = base_image_offset_y
+                    if self.zoom_scale > 1.0:
+                        zoom_diff_w = (actual_display_w - base_display_w) // 2
+                        zoom_diff_h = (actual_display_h - base_display_h) // 2
+                        new_image_offset_x -= zoom_diff_w
+                        new_image_offset_y -= zoom_diff_h
+
+                    # Recalculate pan offset with actual scale
+                    total_offset_x_needed = widget_x - img_x * scale_to_use
+                    total_offset_y_needed = widget_y - img_y * scale_to_use
+                    self.pan_offset_x = total_offset_x_needed - new_image_offset_x
+                    self.pan_offset_y = total_offset_y_needed - new_image_offset_y
 
             # Restart timer to delay expensive display update (for quality improvement)
             # This batches rapid zoom events together
@@ -2034,7 +2187,7 @@ class ImageView(QWidget):
             elif self.zoom_scale > 5.0:
                 delay_ms = 120  # High zoom - medium delay
             else:
-                delay_ms = 80   # Normal zoom - shorter delay
+                delay_ms = 80  # Normal zoom - shorter delay
             self.zoom_update_timer.stop()
             self.zoom_update_timer.start(delay_ms)  # Delay - update after zoom stops
 
@@ -2065,42 +2218,133 @@ class ImageView(QWidget):
             self.zoom_scale = MIN_ZOOM
         self.display_scale = self.base_scale * self.zoom_scale
 
+        # Calculate pan offset BEFORE update_display() so viewport uses correct pan offset
+        will_use_viewport = self.zoom_scale > 10.0
+
+        if will_use_viewport:
+            # Viewport rendering will be active
+            h, w = self.base_image.shape[:2]
+            base_display_w = int(w * self.base_scale)
+            base_display_h = int(h * self.base_scale)
+            widget_w = self.width()
+            widget_h = self.height()
+
+            # Calculate full image offset (matching update_display viewport calculation)
+            full_image_base_offset_x = (widget_w - base_display_w) // 2
+            full_image_base_offset_y = (widget_h - base_display_h) // 2
+
+            # Estimate zoomed full image size for offset calculation
+            estimated_zoom_w = int(w * self.display_scale)
+            estimated_zoom_h = int(h * self.display_scale)
+
+            # Adjust for zoom
+            full_image_offset_x = full_image_base_offset_x
+            full_image_offset_y = full_image_base_offset_y
+            if self.zoom_scale > 1.0:
+                zoom_diff_w = (estimated_zoom_w - base_display_w) // 2
+                zoom_diff_h = (estimated_zoom_h - base_display_h) // 2
+                full_image_offset_x -= zoom_diff_w
+                full_image_offset_y -= zoom_diff_h
+
+            # Calculate desired viewport center so that img_x appears at widget_x
+            widget_center_x = widget_w / 2.0
+            widget_center_y = widget_h / 2.0
+            desired_viewport_center_x = (
+                img_x - (widget_x - widget_center_x) / self.display_scale
+                if self.display_scale > 0
+                else img_x
+            )
+            desired_viewport_center_y = (
+                img_y - (widget_y - widget_center_y) / self.display_scale
+                if self.display_scale > 0
+                else img_y
+            )
+
+            # Calculate pan offset to achieve this viewport center
+            self.pan_offset_x = (
+                widget_center_x
+                - full_image_offset_x
+                - desired_viewport_center_x * self.display_scale
+            )
+            self.pan_offset_y = (
+                widget_center_y
+                - full_image_offset_y
+                - desired_viewport_center_y * self.display_scale
+            )
+        else:
+            # No viewport rendering - standard calculation
+            # Estimate the new image offset and pan offset
+            h, w = self.base_image.shape[:2]
+            base_display_w = int(w * self.base_scale)
+            base_display_h = int(h * self.base_scale)
+            widget_w = self.width()
+            widget_h = self.height()
+
+            # Calculate base image offset
+            base_image_offset_x = (widget_w - base_display_w) // 2
+            base_image_offset_y = (widget_h - base_display_h) // 2
+
+            # Estimate zoomed image size
+            estimated_zoom_w = int(w * self.display_scale)
+            estimated_zoom_h = int(h * self.display_scale)
+
+            # Estimate new image offset (with zoom adjustment)
+            new_image_offset_x = base_image_offset_x
+            new_image_offset_y = base_image_offset_y
+            if self.zoom_scale > 1.0:
+                zoom_diff_w = (estimated_zoom_w - base_display_w) // 2
+                zoom_diff_h = (estimated_zoom_h - base_display_h) // 2
+                new_image_offset_x -= zoom_diff_w
+                new_image_offset_y -= zoom_diff_h
+
+            # Use display_scale for initial calculation (will refine after update_display if capped)
+            scale_to_use = self.display_scale
+
+            # Calculate total offset needed to position img_x at widget_x
+            total_offset_x_needed = widget_x - img_x * scale_to_use
+            total_offset_y_needed = widget_y - img_y * scale_to_use
+
+            # Calculate pan offset to achieve this
+            self.pan_offset_x = total_offset_x_needed - new_image_offset_x
+            self.pan_offset_y = total_offset_y_needed - new_image_offset_y
+
         # Recalculate display image with new zoom (don't rebuild overlay, just recalc viewport)
         # Overlay cache stays valid, only viewport/scaling changes
         self.update_display()
 
-        # Calculate the actual draw offset (matching paintEvent and widget_to_image_coords)
-        h, w = self.base_image.shape[:2]
-        base_display_w = int(w * self.base_scale)
-        base_display_h = int(h * self.base_scale)
-        widget_w = self.width()
-        widget_h = self.height()
-        
-        # Calculate new image offset (base centering)
-        new_image_offset_x = self.image_offset_x
-        new_image_offset_y = self.image_offset_y
-        
-        # Adjust for zoom (matching paintEvent logic)
-        if self.zoom_scale > 1.0 and self.display_image is not None:
-            zoom_diff_w = (self.display_image.width() - base_display_w) // 2
-            zoom_diff_h = (self.display_image.height() - base_display_h) // 2
-            new_image_offset_x -= zoom_diff_w
-            new_image_offset_y -= zoom_diff_h
+        # Refine pan offset if display was capped (actual_display_scale differs from display_scale)
+        scale_to_use = getattr(self, "actual_display_scale", self.display_scale)
+        if (
+            scale_to_use != self.display_scale
+            and scale_to_use > 0
+            and not will_use_viewport
+        ):
+            # Scale was capped, recalculate pan offset with actual scale
+            h, w = self.base_image.shape[:2]
+            base_display_w = int(w * self.base_scale)
+            base_display_h = int(h * self.base_scale)
+            widget_w = self.width()
+            widget_h = self.height()
 
-        # Use actual_display_scale if available (when display was capped), otherwise display_scale
-        scale_to_use = getattr(self, 'actual_display_scale', self.display_scale)
-        if scale_to_use <= 0:
-            scale_to_use = self.display_scale
+            if self.display_image is not None:
+                actual_display_w = self.display_image.width()
+                actual_display_h = self.display_image.height()
+                base_image_offset_x = (widget_w - base_display_w) // 2
+                base_image_offset_y = (widget_h - base_display_h) // 2
 
-        # Calculate total offset needed to position img_x at widget_x
-        # We want: img_x = (widget_x - total_offset) / scale
-        # So: total_offset = widget_x - img_x * scale
-        total_offset_x_needed = widget_x - img_x * scale_to_use
-        total_offset_y_needed = widget_y - img_y * scale_to_use
+                new_image_offset_x = base_image_offset_x
+                new_image_offset_y = base_image_offset_y
+                if self.zoom_scale > 1.0:
+                    zoom_diff_w = (actual_display_w - base_display_w) // 2
+                    zoom_diff_h = (actual_display_h - base_display_h) // 2
+                    new_image_offset_x -= zoom_diff_w
+                    new_image_offset_y -= zoom_diff_h
 
-        # Calculate pan offset to achieve this
-        self.pan_offset_x = total_offset_x_needed - new_image_offset_x
-        self.pan_offset_y = total_offset_y_needed - new_image_offset_y
+                # Recalculate pan offset with actual scale
+                total_offset_x_needed = widget_x - img_x * scale_to_use
+                total_offset_y_needed = widget_y - img_y * scale_to_use
+                self.pan_offset_x = total_offset_x_needed - new_image_offset_x
+                self.pan_offset_y = total_offset_y_needed - new_image_offset_y
 
         # Update display
         self.update()
@@ -2126,35 +2370,95 @@ class ImageView(QWidget):
         # Recalculate pan offset to keep point under cursor
         # Use the stored image coordinates (captured before zoom changed)
         if self.display_image is not None and self.base_image is not None:
-            h, w = self.base_image.shape[:2]
-            base_display_w = int(w * self.base_scale)
-            base_display_h = int(h * self.base_scale)
-            widget_w = self.width()
-            widget_h = self.height()
-            
-            # Calculate new image offset (base centering)
-            new_image_offset_x = self.image_offset_x
-            new_image_offset_y = self.image_offset_y
-            
-            # Adjust for zoom (matching paintEvent logic)
-            if self.zoom_scale > 1.0:
-                new_zoom_diff_w = (self.display_image.width() - base_display_w) // 2
-                new_zoom_diff_h = (self.display_image.height() - base_display_h) // 2
-                new_image_offset_x -= new_zoom_diff_w
-                new_image_offset_y -= new_zoom_diff_h
+            # Check if viewport rendering is active
+            viewport_offset_x = getattr(self, "viewport_offset_x", 0)
+            viewport_offset_y = getattr(self, "viewport_offset_y", 0)
+            is_viewport_active = viewport_offset_x != 0 or viewport_offset_y != 0
+            will_use_viewport = self.zoom_scale > 10.0
 
-            # Use actual_display_scale if available (when display was capped), otherwise display_scale
-            scale_to_use = getattr(self, 'actual_display_scale', self.display_scale)
-            if scale_to_use <= 0:
-                scale_to_use = self.display_scale
-            
-            # Calculate total offset needed to position img_x at widget_x
-            total_offset_x_needed = widget_x - img_x * scale_to_use
-            total_offset_y_needed = widget_y - img_y * scale_to_use
+            if is_viewport_active or will_use_viewport:
+                # Viewport rendering is active (or will be)
+                h, w = self.base_image.shape[:2]
+                base_display_w = int(w * self.base_scale)
+                base_display_h = int(h * self.base_scale)
+                widget_w = self.width()
+                widget_h = self.height()
 
-            # Calculate pan offset to achieve this
-            self.pan_offset_x = total_offset_x_needed - new_image_offset_x
-            self.pan_offset_y = total_offset_y_needed - new_image_offset_y
+                # Calculate full image offset (matching update_display viewport calculation)
+                full_image_base_offset_x = (widget_w - base_display_w) // 2
+                full_image_base_offset_y = (widget_h - base_display_h) // 2
+
+                # Estimate zoomed full image size for offset calculation
+                estimated_zoom_w = int(w * self.display_scale)
+                estimated_zoom_h = int(h * self.display_scale)
+
+                # Adjust for zoom
+                full_image_offset_x = full_image_base_offset_x
+                full_image_offset_y = full_image_base_offset_y
+                if self.zoom_scale > 1.0:
+                    zoom_diff_w = (estimated_zoom_w - base_display_w) // 2
+                    zoom_diff_h = (estimated_zoom_h - base_display_h) // 2
+                    full_image_offset_x -= zoom_diff_w
+                    full_image_offset_y -= zoom_diff_h
+
+                # Calculate desired viewport center so that img_x appears at widget_x
+                widget_center_x = widget_w / 2.0
+                widget_center_y = widget_h / 2.0
+                desired_viewport_center_x = (
+                    img_x - (widget_x - widget_center_x) / self.display_scale
+                    if self.display_scale > 0
+                    else img_x
+                )
+                desired_viewport_center_y = (
+                    img_y - (widget_y - widget_center_y) / self.display_scale
+                    if self.display_scale > 0
+                    else img_y
+                )
+
+                # Calculate pan offset to achieve this viewport center
+                self.pan_offset_x = (
+                    widget_center_x
+                    - full_image_offset_x
+                    - desired_viewport_center_x * self.display_scale
+                )
+                self.pan_offset_y = (
+                    widget_center_y
+                    - full_image_offset_y
+                    - desired_viewport_center_y * self.display_scale
+                )
+            else:
+                # No viewport rendering - standard calculation
+                h, w = self.base_image.shape[:2]
+                base_display_w = int(w * self.base_scale)
+                base_display_h = int(h * self.base_scale)
+                widget_w = self.width()
+                widget_h = self.height()
+
+                # Calculate new image offset (base centering)
+                new_image_offset_x = self.image_offset_x
+                new_image_offset_y = self.image_offset_y
+
+                # Adjust for zoom (matching paintEvent logic)
+                if self.zoom_scale > 1.0:
+                    new_zoom_diff_w = (self.display_image.width() - base_display_w) // 2
+                    new_zoom_diff_h = (
+                        self.display_image.height() - base_display_h
+                    ) // 2
+                    new_image_offset_x -= new_zoom_diff_w
+                    new_image_offset_y -= new_zoom_diff_h
+
+                # Use actual_display_scale if available (when display was capped), otherwise display_scale
+                scale_to_use = getattr(self, "actual_display_scale", self.display_scale)
+                if scale_to_use <= 0:
+                    scale_to_use = self.display_scale
+
+                # Calculate total offset needed to position img_x at widget_x
+                total_offset_x_needed = widget_x - img_x * scale_to_use
+                total_offset_y_needed = widget_y - img_y * scale_to_use
+
+                # Calculate pan offset to achieve this
+                self.pan_offset_x = total_offset_x_needed - new_image_offset_x
+                self.pan_offset_y = total_offset_y_needed - new_image_offset_y
 
         # Update display
         self.update()
@@ -2287,50 +2591,122 @@ class ImageView(QWidget):
         bbox_center_x = (xmin + xmax) / 2.0
         bbox_center_y = (ymin + ymax) / 2.0
 
-        # Calculate where the bbox center should be in widget coordinates to center it
-        # We want: widget_center = bbox_center_img * display_scale + image_offset + pan_offset
-        # So: pan_offset = widget_center - bbox_center_img * display_scale - image_offset
+        # Calculate pan offset BEFORE update_display() so viewport uses correct pan offset
+        # Check if viewport rendering will be active
+        will_use_viewport = self.zoom_scale > 10.0
 
-        # First update display to get correct image offset calculations
-        self.update_display()
+        if will_use_viewport:
+            # Viewport rendering will be active
+            # Calculate full image offset (matching update_display viewport calculation)
+            base_display_w = int(img_w * self.base_scale)
+            base_display_h = int(img_h * self.base_scale)
+            full_image_base_offset_x = (widget_w - base_display_w) // 2
+            full_image_base_offset_y = (widget_h - base_display_h) // 2
 
-        # Recalculate image offset (same as in paintEvent)
-        base_display_w = int(img_w * self.base_scale)
-        base_display_h = int(img_h * self.base_scale)
-        self.image_offset_x = (widget_w - base_display_w) // 2
-        self.image_offset_y = (widget_h - base_display_h) // 2
+            # Estimate zoomed full image size for offset calculation
+            estimated_zoom_w = int(img_w * self.display_scale)
+            estimated_zoom_h = int(img_h * self.display_scale)
 
-        # Adjust for zoom
-        if self.zoom_scale > 1.0:
-            zoom_diff_w = (self.display_image.width() - base_display_w) // 2
-            zoom_diff_h = (self.display_image.height() - base_display_h) // 2
-            self.image_offset_x -= zoom_diff_w
-            self.image_offset_y -= zoom_diff_h
+            # Adjust for zoom
+            full_image_offset_x = full_image_base_offset_x
+            full_image_offset_y = full_image_base_offset_y
+            if self.zoom_scale > 1.0:
+                zoom_diff_w = (estimated_zoom_w - base_display_w) // 2
+                zoom_diff_h = (estimated_zoom_h - base_display_h) // 2
+                full_image_offset_x -= zoom_diff_w
+                full_image_offset_y -= zoom_diff_h
 
-        # Calculate pan offset to center bounding box
-        widget_center_x = widget_w / 2.0
-        widget_center_y = widget_h / 2.0
+            # Calculate desired viewport center so that bbox_center appears at widget center
+            widget_center_x = widget_w / 2.0
+            widget_center_y = widget_h / 2.0
+            desired_viewport_center_x = bbox_center_x
+            desired_viewport_center_y = bbox_center_y
 
-        # Use actual_display_scale if available (when display was capped), otherwise display_scale
-        scale_to_use = getattr(self, 'actual_display_scale', self.display_scale)
-        if scale_to_use <= 0:
+            # Calculate pan offset to achieve this viewport center
+            self.pan_offset_x = (
+                widget_center_x
+                - full_image_offset_x
+                - desired_viewport_center_x * self.display_scale
+            )
+            self.pan_offset_y = (
+                widget_center_y
+                - full_image_offset_y
+                - desired_viewport_center_y * self.display_scale
+            )
+        else:
+            # No viewport rendering - standard calculation
+            # Estimate the new image offset and pan offset
+            base_display_w = int(img_w * self.base_scale)
+            base_display_h = int(img_h * self.base_scale)
+            base_image_offset_x = (widget_w - base_display_w) // 2
+            base_image_offset_y = (widget_h - base_display_h) // 2
+
+            # Estimate zoomed image size
+            estimated_zoom_w = int(img_w * self.display_scale)
+            estimated_zoom_h = int(img_h * self.display_scale)
+
+            # Estimate new image offset (with zoom adjustment)
+            new_image_offset_x = base_image_offset_x
+            new_image_offset_y = base_image_offset_y
+            if self.zoom_scale > 1.0:
+                zoom_diff_w = (estimated_zoom_w - base_display_w) // 2
+                zoom_diff_h = (estimated_zoom_h - base_display_h) // 2
+                new_image_offset_x -= zoom_diff_w
+                new_image_offset_y -= zoom_diff_h
+
+            # Use display_scale for initial calculation (will refine after update_display if capped)
             scale_to_use = self.display_scale
 
-        # Position where bbox center would be without pan
-        bbox_center_in_widget_x = (
-            bbox_center_x * scale_to_use + self.image_offset_x
-        )
-        bbox_center_in_widget_y = (
-            bbox_center_y * scale_to_use + self.image_offset_y
-        )
+            # Calculate total offset needed to position bbox_center at widget center
+            widget_center_x = widget_w / 2.0
+            widget_center_y = widget_h / 2.0
+            total_offset_x_needed = widget_center_x - bbox_center_x * scale_to_use
+            total_offset_y_needed = widget_center_y - bbox_center_y * scale_to_use
 
-        # Calculate pan offset to center it
-        self.pan_offset_x = widget_center_x - bbox_center_in_widget_x
-        self.pan_offset_y = widget_center_y - bbox_center_in_widget_y
+            # Calculate pan offset to achieve this
+            self.pan_offset_x = total_offset_x_needed - new_image_offset_x
+            self.pan_offset_y = total_offset_y_needed - new_image_offset_y
 
-        # Update display (invalidate cache when mask changes)
+        # Now update display with the correct pan offset
+        # Invalidate cache to ensure fresh display
         self.overlay_cache_valid = False
         self.update_display()
+
+        # Refine pan offset if display was capped (actual_display_scale differs from display_scale)
+        scale_to_use = getattr(self, "actual_display_scale", self.display_scale)
+        if (
+            scale_to_use != self.display_scale
+            and scale_to_use > 0
+            and not will_use_viewport
+        ):
+            # Scale was capped, recalculate pan offset with actual scale
+            base_display_w = int(img_w * self.base_scale)
+            base_display_h = int(img_h * self.base_scale)
+
+            if self.display_image is not None:
+                actual_display_w = self.display_image.width()
+                actual_display_h = self.display_image.height()
+                base_image_offset_x = (widget_w - base_display_w) // 2
+                base_image_offset_y = (widget_h - base_display_h) // 2
+
+                new_image_offset_x = base_image_offset_x
+                new_image_offset_y = base_image_offset_y
+                if self.zoom_scale > 1.0:
+                    zoom_diff_w = (actual_display_w - base_display_w) // 2
+                    zoom_diff_h = (actual_display_h - base_display_h) // 2
+                    new_image_offset_x -= zoom_diff_w
+                    new_image_offset_y -= zoom_diff_h
+
+                # Recalculate pan offset with actual scale
+                widget_center_x = widget_w / 2.0
+                widget_center_y = widget_h / 2.0
+                total_offset_x_needed = widget_center_x - bbox_center_x * scale_to_use
+                total_offset_y_needed = widget_center_y - bbox_center_y * scale_to_use
+                self.pan_offset_x = total_offset_x_needed - new_image_offset_x
+                self.pan_offset_y = total_offset_y_needed - new_image_offset_y
+                # Update display again with refined pan offset
+                self.update_display()
+
         self.update()
 
     def __del__(self):
