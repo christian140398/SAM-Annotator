@@ -3,6 +3,8 @@ SegmentsPanel component for SAM Annotator
 Replicates the functionality of the React SegmentsPanel component
 """
 
+import os
+import re
 from typing import Optional, List, Dict, Any
 from PySide6.QtWidgets import (
     QWidget,
@@ -14,7 +16,9 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QFrame,
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QByteArray, QSize
+from PySide6.QtGui import QIcon, QPixmap, QPainter
+from PySide6.QtSvg import QSvgRenderer
 from frontend.theme import (
     ITEM_BG,
     ITEM_BORDER,
@@ -22,6 +26,53 @@ from frontend.theme import (
     BACKGROUND_MAIN,
     PRIMARY_COLOR,
 )
+
+# Get the directory of this file to resolve icon paths
+_ICON_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "icons")
+
+
+def create_colored_svg_icon(svg_path: str, color: str = "#3b82f6") -> QIcon:
+    """Load SVG file and create a colored version as QIcon"""
+    try:
+        with open(svg_path, "r", encoding="utf-8") as f:
+            svg_content = f.read()
+
+        # Replace stroke colors with specified color
+        # Match stroke:#... in CSS styles (e.g., stroke:#020202;)
+        svg_content = re.sub(
+            r"stroke:#[0-9a-fA-F]{3,6}", f"stroke:{color}", svg_content
+        )
+        # Match stroke="..." attributes
+        svg_content = re.sub(r'stroke="[^"]*"', f'stroke="{color}"', svg_content)
+
+        # Replace fill colors with specified color (except for fill="none" or fill:none)
+        # Match fill:#... in CSS styles (but not fill:none)
+        svg_content = re.sub(
+            r"fill:#([0-9a-fA-F]{3,6})(?!\s*none)", f"fill:{color}", svg_content
+        )
+        # Match fill="..." attributes (but not fill="none")
+        svg_content = re.sub(r'fill="(?!none)[^"]*"', f'fill="{color}"', svg_content)
+
+        # Also replace any color: attributes in CSS
+        svg_content = re.sub(r"color:#[0-9a-fA-F]{3,6}", f"color:{color}", svg_content)
+
+        # Create QIcon from modified SVG content using QSvgRenderer
+        svg_bytes = QByteArray(svg_content.encode("utf-8"))
+        renderer = QSvgRenderer(svg_bytes)
+        if renderer.isValid():
+            pixmap = QPixmap(16, 16)
+            pixmap.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(pixmap)
+            renderer.render(painter)
+            painter.end()
+            icon = QIcon(pixmap)
+            return icon
+        else:
+            # Fallback to loading SVG as-is
+            return QIcon(svg_path)
+    except Exception:
+        # Fallback to loading SVG as-is
+        return QIcon(svg_path)
 
 
 class SegmentItem(QFrame):
@@ -35,6 +86,7 @@ class SegmentItem(QFrame):
         is_selected: bool,
         on_click_callback=None,
         on_hover_callback=None,
+        on_edit_callback=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -44,6 +96,7 @@ class SegmentItem(QFrame):
         self.segment_id = segment.get("id")  # Store segment ID for click handling
         self.on_click_callback = on_click_callback
         self.on_hover_callback = on_hover_callback
+        self.on_edit_callback = on_edit_callback
 
         # Enable mouse tracking for hover detection
         self.setMouseTracking(True)
@@ -96,6 +149,37 @@ class SegmentItem(QFrame):
         layout.addWidget(self.name_label)
         layout.addStretch()
 
+        # Edit button
+        edit_icon_path = os.path.join(_ICON_DIR, "edit-3-svgrepo-com.svg")
+        edit_icon = (
+            create_colored_svg_icon(edit_icon_path, "#3b82f6")
+            if os.path.exists(edit_icon_path)
+            else None
+        )
+
+        self.edit_button = QPushButton()
+        self.edit_button.setFixedSize(28, 28)
+        self.edit_button.setToolTip("Edit segment")
+        if edit_icon:
+            self.edit_button.setIcon(edit_icon)
+            self.edit_button.setIconSize(QSize(16, 16))
+        else:
+            # Fallback to emoji if icon file not found
+            self.edit_button.setText("✏️")
+        self.edit_button.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                border: none;
+                font-size: 14px;
+                color: #3b82f6;
+            }
+            QPushButton:hover {
+                background-color: #2b303b;
+                border-radius: 4px;
+            }
+        """)
+        layout.addWidget(self.edit_button)
+
         # Delete button
         self.delete_button = QPushButton("🗑")
         self.delete_button.setFixedSize(28, 28)
@@ -129,7 +213,7 @@ class SegmentItem(QFrame):
     def mousePressEvent(self, event):
         """Handle clicks on the segment item"""
         if event.button() == Qt.LeftButton:
-            # Don't propagate if clicking on delete button
+            # Don't propagate if clicking on buttons
             child = self.childAt(event.pos())
             if child and isinstance(child, QPushButton):
                 return
@@ -178,6 +262,7 @@ class SegmentsPanel(QWidget):
     segment_hovered = Signal(
         str, bool
     )  # Emits (segment_id, is_hovered) when segment is hovered
+    segment_edit_requested = Signal(str)  # Emits segment_id when edit button is clicked
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -369,10 +454,14 @@ class SegmentsPanel(QWidget):
                 is_selected,
                 on_click_callback=self.on_segment_item_clicked,
                 on_hover_callback=self.on_segment_item_hovered,
+                on_edit_callback=self.on_edit,
             )
 
-            # Connect delete button signal
+            # Connect button signals
             seg_id = segment.get("id")
+            item.edit_button.clicked.connect(
+                lambda checked, sid=seg_id: self.on_edit(sid)
+            )
             item.delete_button.clicked.connect(
                 lambda checked, sid=seg_id: self.on_delete(sid)
             )
@@ -402,6 +491,10 @@ class SegmentsPanel(QWidget):
     def on_toggle_visibility(self, segment_id: str):
         """Handle visibility toggle"""
         self.visibility_toggled.emit(segment_id)
+
+    def on_edit(self, segment_id: str):
+        """Handle segment edit request"""
+        self.segment_edit_requested.emit(segment_id)
 
     def on_delete(self, segment_id: str):
         """Handle segment deletion"""

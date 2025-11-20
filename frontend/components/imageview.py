@@ -2522,6 +2522,43 @@ class ImageView(QWidget):
         self.update_display()
         self.update()
 
+    def start_editing_segment(self, segment_index: int) -> bool:
+        """
+        Start editing a finalized segment by loading it as the current mask
+
+        Args:
+            segment_index: Index of the segment in finalized_masks to edit
+
+        Returns:
+            True if successfully started editing, False otherwise
+        """
+        if segment_index < 0 or segment_index >= len(self.finalized_masks):
+            return False
+
+        # Get the mask and label
+        mask = self.finalized_masks[segment_index]
+        label_id = self.finalized_labels[segment_index]
+
+        # Remove from finalized lists
+        self.finalized_masks.pop(segment_index)
+        self.finalized_labels.pop(segment_index)
+
+        # Load as current mask for editing
+        self.current_mask = mask.copy()
+        self.current_label_id = label_id
+        self.current_points = []  # Clear points since we're editing the mask directly
+
+        # Clear history since we're starting fresh
+        self.mask_history = []
+        self.points_history = []
+
+        # Invalidate cache to update display
+        self.overlay_cache_valid = False
+        self.update_display()
+        self.update()
+
+        return True
+
     def fit_to_bounding_box(self):
         """
         Fit the view to show the bounding box with some padding

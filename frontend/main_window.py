@@ -661,6 +661,9 @@ class MainWindow(QMainWindow):
         )
         self.segments_panel.label_updated.connect(self.on_segment_label_updated)
         self.segments_panel.segment_hovered.connect(self.on_segment_hovered)
+        self.segments_panel.segment_edit_requested.connect(
+            self.on_segment_edit_requested
+        )
 
         # Topbar -> MainWindow
         self.topbar.label_selected.connect(self.on_label_selected)
@@ -1152,6 +1155,51 @@ class MainWindow(QMainWindow):
         self.image_view.overlay_cache_valid = False
         self.image_view.update_display()
         self.image_view.update()
+
+    def on_segment_edit_requested(self, segment_id: str):
+        """Handle segment edit request from panel"""
+        # Check if there's an active segment being edited
+        if self.image_view.has_active_segment():
+            # Ask user if they want to discard current work
+            reply = QMessageBox.question(
+                self,
+                "Active Segment",
+                "You have an active segment being edited. Do you want to discard it and edit the selected segment?",
+                QMessageBox.Yes | QMessageBox.Cancel,
+                QMessageBox.Cancel,
+            )
+
+            if reply != QMessageBox.Yes:
+                return
+
+            # Clear current segment
+            self.image_view.clear_current_segment()
+
+        # Find segment index from ID mapping
+        segment_idx = None
+        if hasattr(self, "_segment_id_map"):
+            for idx, seg_id in self._segment_id_map.items():
+                if seg_id == segment_id:
+                    segment_idx = idx
+                    break
+
+        if segment_idx is not None:
+            # Start editing the segment
+            if self.image_view.start_editing_segment(segment_idx):
+                # Update ID mapping (shift indices since we removed one)
+                new_map = {}
+                for old_idx, seg_id in self._segment_id_map.items():
+                    if old_idx < segment_idx:
+                        new_map[old_idx] = seg_id
+                    elif old_idx > segment_idx:
+                        new_map[old_idx - 1] = seg_id
+                self._segment_id_map = new_map
+
+                # Switch to brush tool for editing (more intuitive for mask editing)
+                self.select_tool("brush")
+
+                # Update segments panel
+                self.update_segments_panel()
 
     def update_segments_panel(self):
         """Update segments panel with current segments"""
