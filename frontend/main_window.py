@@ -1184,22 +1184,35 @@ class MainWindow(QMainWindow):
                     break
 
         if segment_idx is not None:
-            # Start editing the segment
-            if self.image_view.start_editing_segment(segment_idx):
-                # Update ID mapping (shift indices since we removed one)
-                new_map = {}
-                for old_idx, seg_id in self._segment_id_map.items():
-                    if old_idx < segment_idx:
-                        new_map[old_idx] = seg_id
-                    elif old_idx > segment_idx:
-                        new_map[old_idx - 1] = seg_id
-                self._segment_id_map = new_map
+            # Get the label_id from the segment before editing starts
+            segments = self.image_view.get_segments()
+            if segment_idx < len(segments):
+                segment_label_id = segments[segment_idx][
+                    1
+                ]  # Get label_id from (mask, label_id) tuple
 
-                # Switch to brush tool for editing (more intuitive for mask editing)
-                self.select_tool("brush")
+                # Start editing the segment
+                if self.image_view.start_editing_segment(segment_idx):
+                    # Update MainWindow's current label to match the segment being edited
+                    self.current_label_id = segment_label_id
 
-                # Update segments panel
-                self.update_segments_panel()
+                    # Update topbar's selected label
+                    self.topbar.set_selected_label(segment_label_id)
+
+                    # Update ID mapping (shift indices since we removed one)
+                    new_map = {}
+                    for old_idx, seg_id in self._segment_id_map.items():
+                        if old_idx < segment_idx:
+                            new_map[old_idx] = seg_id
+                        elif old_idx > segment_idx:
+                            new_map[old_idx - 1] = seg_id
+                    self._segment_id_map = new_map
+
+                    # Switch to brush tool for editing (more intuitive for mask editing)
+                    self.select_tool("brush")
+
+                    # Update segments panel
+                    self.update_segments_panel()
 
     def update_segments_panel(self):
         """Update segments panel with current segments"""
