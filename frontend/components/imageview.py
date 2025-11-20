@@ -155,7 +155,9 @@ class ImageView(QWidget):
         # Brush state
         self.is_brushing = False
         self.brush_mode = "draw"  # "draw" or "erase"
-        self.brush_size = 10  # Brush radius in pixels (image coordinates)
+        self.brush_size = (
+            10  # Brush size (side length for squares) in pixels (image coordinates)
+        )
         self.last_brush_pos: Optional[Tuple[int, int]] = (
             None  # Last brush position in image coordinates
         )
@@ -780,17 +782,25 @@ class ImageView(QWidget):
         scale_to_use = getattr(self, "actual_display_scale", self.display_scale)
         if scale_to_use <= 0:
             scale_to_use = self.display_scale
-        brush_radius = (
-            max(1, int(self.brush_size / scale_to_use))
-            if scale_to_use > 0
-            else self.brush_size
+        # For squares: brush_size represents side length, so radius = (size - 1) / 2
+        # This allows brush_size=1 to create a 1x1 pixel square (radius=0)
+        scaled_size = (
+            int(self.brush_size / scale_to_use) if scale_to_use > 0 else self.brush_size
         )
-        # Ensure brush_radius is valid (at least 1, and not too large)
-        brush_radius = max(1, min(brush_radius, 1000))  # Cap at reasonable maximum
+        brush_radius = max(0, (scaled_size - 1) // 2) if scaled_size > 0 else 0
+        # Ensure brush_radius is valid (at least 0 for 1-pixel square, and not too large)
+        brush_radius = max(0, min(brush_radius, 1000))  # Cap at reasonable maximum
 
         # Create a temporary mask for the brush stroke
         temp_mask = np.zeros((h, w), dtype=np.uint8)
-        cv2.circle(temp_mask, (img_x, img_y), brush_radius, 255, -1)
+        # Draw a square instead of a circle
+        # When brush_radius is 0, this creates a 1x1 pixel square
+        top_left = (max(0, img_x - brush_radius), max(0, img_y - brush_radius))
+        bottom_right = (
+            min(w - 1, img_x + brush_radius),
+            min(h - 1, img_y + brush_radius),
+        )
+        cv2.rectangle(temp_mask, top_left, bottom_right, 255, -1)
         temp_mask = temp_mask.astype(bool)
 
         # Apply to current mask
@@ -843,13 +853,14 @@ class ImageView(QWidget):
         scale_to_use = getattr(self, "actual_display_scale", self.display_scale)
         if scale_to_use <= 0:
             scale_to_use = self.display_scale
-        brush_radius = (
-            max(1, int(self.brush_size / scale_to_use))
-            if scale_to_use > 0
-            else self.brush_size
+        # For squares: brush_size represents side length, so radius = (size - 1) / 2
+        # This allows brush_size=1 to create a 1x1 pixel square (radius=0)
+        scaled_size = (
+            int(self.brush_size / scale_to_use) if scale_to_use > 0 else self.brush_size
         )
-        # Ensure brush_radius is valid (at least 1, and not too large)
-        brush_radius = max(1, min(brush_radius, 1000))  # Cap at reasonable maximum
+        brush_radius = max(0, (scaled_size - 1) // 2) if scaled_size > 0 else 0
+        # Ensure brush_radius is valid (at least 0 for 1-pixel square, and not too large)
+        brush_radius = max(0, min(brush_radius, 1000))  # Cap at reasonable maximum
 
         # Create a temporary mask for the brush line
         temp_mask = np.zeros((h, w), dtype=np.uint8)
@@ -862,9 +873,24 @@ class ImageView(QWidget):
             thickness = max(1, int(thickness))  # Ensure at least 1 and is integer
 
         cv2.line(temp_mask, (start_x, start_y), (end_x, end_y), 255, thickness)
-        # Also draw circles at start and end for smoother strokes
-        cv2.circle(temp_mask, (start_x, start_y), brush_radius, 255, -1)
-        cv2.circle(temp_mask, (end_x, end_y), brush_radius, 255, -1)
+        # Also draw squares at start and end for smoother strokes
+        # Start point square
+        start_top_left = (
+            max(0, start_x - brush_radius),
+            max(0, start_y - brush_radius),
+        )
+        start_bottom_right = (
+            min(w - 1, start_x + brush_radius),
+            min(h - 1, start_y + brush_radius),
+        )
+        cv2.rectangle(temp_mask, start_top_left, start_bottom_right, 255, -1)
+        # End point square
+        end_top_left = (max(0, end_x - brush_radius), max(0, end_y - brush_radius))
+        end_bottom_right = (
+            min(w - 1, end_x + brush_radius),
+            min(h - 1, end_y + brush_radius),
+        )
+        cv2.rectangle(temp_mask, end_top_left, end_bottom_right, 255, -1)
         temp_mask = temp_mask.astype(bool)
 
         # Apply to current mask
@@ -2521,6 +2547,43 @@ class ImageView(QWidget):
         self.overlay_cache_valid = False
         self.update_display()
         self.update()
+
+    def start_editing_segment(self, segment_index: int) -> bool:
+        """
+        Start editing a finalized segment by loading it as the current mask
+
+        Args:
+            segment_index: Index of the segment in finalized_masks to edit
+
+        Returns:
+            True if successfully started editing, False otherwise
+        """
+        if segment_index < 0 or segment_index >= len(self.finalized_masks):
+            return False
+
+        # Get the mask and label
+        mask = self.finalized_masks[segment_index]
+        label_id = self.finalized_labels[segment_index]
+
+        # Remove from finalized lists
+        self.finalized_masks.pop(segment_index)
+        self.finalized_labels.pop(segment_index)
+
+        # Load as current mask for editing
+        self.current_mask = mask.copy()
+        self.current_label_id = label_id
+        self.current_points = []  # Clear points since we're editing the mask directly
+
+        # Clear history since we're starting fresh
+        self.mask_history = []
+        self.points_history = []
+
+        # Invalidate cache to update display
+        self.overlay_cache_valid = False
+        self.update_display()
+        self.update()
+
+        return True
 
     def fit_to_bounding_box(self):
         """
