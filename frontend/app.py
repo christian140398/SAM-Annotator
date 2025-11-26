@@ -3,7 +3,9 @@ Main entry point for the PySide6 frontend
 """
 
 import sys
+
 from PySide6.QtWidgets import QApplication
+
 from frontend.main_window import MainWindow
 
 

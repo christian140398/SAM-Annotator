@@ -5,9 +5,10 @@ Functions for exporting annotations in VOC (Pascal VOC) XML format
 
 import os
 import xml.etree.ElementTree as ET
+from typing import Dict, List, Optional, Tuple
+
 import cv2
 import numpy as np
-from typing import List, Dict, Tuple, Optional
 
 
 def load_input_objects(xml_path: Optional[str]) -> List[Dict]:

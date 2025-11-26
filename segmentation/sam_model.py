@@ -4,10 +4,11 @@ Handles loading and managing the SAM model and predictor
 """
 
 import os
-import torch
-from segment_anything import sam_model_registry, SamPredictor
+
 import cv2
 import numpy as np
+import torch
+from segment_anything import SamPredictor, sam_model_registry
 
 
 class SAMModel:

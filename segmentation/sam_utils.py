@@ -4,8 +4,9 @@ Helper functions for mask processing, box operations, and format conversion
 """
 
 import os
-import numpy as np
 import xml.etree.ElementTree as ET
+
+import numpy as np
 from pycocotools import mask as mask_utils
 
 
