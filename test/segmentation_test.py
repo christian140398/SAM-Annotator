@@ -6,12 +6,13 @@ Example: python test/segmentation_test.py 00004
 Example: python test/segmentation_test.py 00004 --format coco
 """
 
+import argparse
+import hashlib
+import json
 import os
 import sys
-import argparse
 import xml.etree.ElementTree as ET
-import json
-import hashlib
+
 import cv2
 import numpy as np
 
@@ -395,7 +396,7 @@ def draw_segmentations_matplotlib(
             "Install it with: pip install matplotlib\n"
             "Or use --backend opencv instead."
         )
-    from matplotlib.patches import Rectangle, Polygon
+    from matplotlib.patches import Polygon, Rectangle
 
     if color_palette is None:
         color_palette = load_color_palette(LABEL_FILE)

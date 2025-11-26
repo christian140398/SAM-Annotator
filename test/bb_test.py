@@ -6,12 +6,13 @@ Example: python test/bb_test.py 00004
 Example: python test/bb_test.py 00004 --format coco
 """
 
+import argparse
+import hashlib
+import json
 import os
 import sys
-import argparse
 import xml.etree.ElementTree as ET
-import json
-import hashlib
+
 import cv2
 import numpy as np
 

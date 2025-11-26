@@ -2,41 +2,41 @@
 Main window for SAM Annotator using PySide6
 """
 
-import os
-import uuid
-import shutil
-import xml.etree.ElementTree as ET
 import hashlib
+import os
 import re
-from typing import Optional, List, Dict, Tuple
+import shutil
+import uuid
+import xml.etree.ElementTree as ET
+from typing import Dict, List, Optional, Tuple
+
+import cv2
+import numpy as np
+from PySide6.QtCore import QEvent, QObject, Qt, QThread, Signal  # type: ignore
+from PySide6.QtGui import QKeyEvent, QKeySequence, QShortcut  # type: ignore
 from PySide6.QtWidgets import (  # type: ignore[import-untyped]
-    QMainWindow,
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QFrame,
-    QMessageBox,
     QApplication,
     QDialog,
     QDialogButtonBox,
+    QFrame,
+    QHBoxLayout,
     QLabel,
+    QMainWindow,
+    QMessageBox,
+    QVBoxLayout,
+    QWidget,
 )
 
-from PySide6.QtGui import QKeySequence, QShortcut, QKeyEvent  # type: ignore
-from PySide6.QtCore import Qt, QEvent, QThread, QObject, Signal  # type: ignore
-import cv2
-import numpy as np
-from frontend.theme import get_main_window_style, ITEM_BG
-from frontend.components.topbar import TopBar
-from frontend.components.toolbar import Toolbar
+import config
 from frontend.components.imageview import ImageView
-from frontend.components.segmentpanel import SegmentsPanel
 from frontend.components.keybindbar import KeybindsBar
+from frontend.components.segmentpanel import SegmentsPanel
+from frontend.components.toolbar import Toolbar
+from frontend.components.topbar import TopBar
+from frontend.theme import ITEM_BG, get_main_window_style
+from segmentation.coco_export import COCOExporter
 from segmentation.sam_model import SAMModel
 from segmentation.voc_export import VOCExporter
-from segmentation.coco_export import COCOExporter
-import config
-
 
 # Configuration
 CHECKPOINT = r"models\sam_vit_b_01ec64.pth"
@@ -233,6 +233,12 @@ class MainWindow(QMainWindow):
         self.preload_thread: Optional[QThread] = None  # Thread for preloading embedding
         self.preload_worker: Optional[QObject] = None  # Worker for preloading
         self.preload_ready = False  # Flag to track if preload embedding is complete
+        self.preload_cleanup_in_progress = (
+            False  # Flag to track if thread cleanup is in progress
+        )
+
+        # Loading state - prevent concurrent image loading
+        self.is_loading_image = False  # Flag to prevent concurrent image loads
 
         # Initialize SAM model
         self.init_sam_model()
@@ -473,35 +479,43 @@ class MainWindow(QMainWindow):
 
     def load_current_image(self):
         """Load the current image and corresponding label from input/labels folder"""
+        # Prevent concurrent loading
+        if self.is_loading_image:
+            print("Image is already loading, skipping concurrent load request")
+            return
+
         if not self.image_paths or self.current_image_idx >= len(self.image_paths):
             print("No images to load or index out of range")
             return
 
-        img_path = self.image_paths[self.current_image_idx]
-        print(f"Loading image: {img_path}")
-
-        # Find corresponding XML file in input/labels folder
-        xml_path = None
-        if config.BOUNDING_BOX_EXISTS and CLIP_TO_XML_BOX:
-            # Get base name without extension
-            base_name = os.path.splitext(os.path.basename(img_path))[0]
-
-            # Look for XML in input/labels folder with same base name
-            xml_path = os.path.join(LABEL_DIR, base_name + ".xml")
-
-            # Create label directory if it doesn't exist
-            if not os.path.isdir(LABEL_DIR):
-                os.makedirs(LABEL_DIR, exist_ok=True)
-
-            if not os.path.isfile(xml_path):
-                print(f"No label file found at {xml_path}")
-                xml_path = None
-            else:
-                print(f"Found label file: {xml_path}")
-        elif not config.BOUNDING_BOX_EXISTS:
-            print("BOUNDING_BOX_EXISTS is False - skipping XML file lookup")
+        # Set loading flag
+        self.is_loading_image = True
 
         try:
+            img_path = self.image_paths[self.current_image_idx]
+            print(f"Loading image: {img_path}")
+
+            # Find corresponding XML file in input/labels folder
+            xml_path = None
+            if config.BOUNDING_BOX_EXISTS and CLIP_TO_XML_BOX:
+                # Get base name without extension
+                base_name = os.path.splitext(os.path.basename(img_path))[0]
+
+                # Look for XML in input/labels folder with same base name
+                xml_path = os.path.join(LABEL_DIR, base_name + ".xml")
+
+                # Create label directory if it doesn't exist
+                if not os.path.isdir(LABEL_DIR):
+                    os.makedirs(LABEL_DIR, exist_ok=True)
+
+                if not os.path.isfile(xml_path):
+                    print(f"No label file found at {xml_path}")
+                    xml_path = None
+                else:
+                    print(f"Found label file: {xml_path}")
+            elif not config.BOUNDING_BOX_EXISTS:
+                print("BOUNDING_BOX_EXISTS is False - skipping XML file lookup")
+
             # Check if we have a preloaded embedding ready for this image
             # The embedding might have been started right before navigation
             use_preloaded = (
@@ -642,6 +656,9 @@ class MainWindow(QMainWindow):
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load image: {str(e)}")
+        finally:
+            # Always reset loading flag when done
+            self.is_loading_image = False
 
     def connect_signals(self):
         """Connect component signals"""
@@ -1025,37 +1042,72 @@ class MainWindow(QMainWindow):
         if self.preloaded_image is None or self.preload_sam_model is None:
             return
 
-        # Cancel any existing preload thread (without waiting to avoid blocking)
+        # Prevent starting if cleanup is in progress
+        if self.preload_cleanup_in_progress:
+            print("Thread cleanup in progress, skipping preload embedding start")
+            return
+
+        # Cancel any existing preload thread and wait for it to finish
+        # This ensures proper cleanup before creating a new thread
+        if self.preload_thread is not None:
+            self.cancel_preload()
+            # Wait a bit more to ensure cleanup completes
+            # Process events to allow cleanup to finish
+            if QApplication.instance() is not None:
+                QApplication.instance().processEvents()
+
+            # Double-check that thread is cleaned up
+            max_wait = 10
+            wait_count = 0
+            while self.preload_cleanup_in_progress and wait_count < max_wait:
+                if QApplication.instance() is not None:
+                    QApplication.instance().processEvents()
+                wait_count += 1
+                QThread.msleep(10)  # Small delay to allow cleanup
+
+            if self.preload_cleanup_in_progress:
+                print("Warning: Thread cleanup still in progress, may cause issues")
+
+        # Ensure old thread and worker are fully cleaned up
         if self.preload_thread is not None:
             try:
                 if self.preload_thread.isRunning():
-                    self.preload_thread.quit()
-                    # Don't wait - let it finish in background
+                    print("Warning: Previous thread still running, forcing cleanup")
+                    self._cleanup_preload_thread()
             except RuntimeError:
                 pass
 
         # Create new thread and worker for preloading
         # Use separate preload_sam_model so it doesn't interfere with current image
-        self.preload_thread = QThread()
-        self.preload_worker = PreloadEmbeddingWorker(
-            self.preload_sam_model, self.preloaded_image
-        )
-        self.preload_worker.moveToThread(self.preload_thread)
+        try:
+            self.preload_thread = QThread()
+            self.preload_worker = PreloadEmbeddingWorker(
+                self.preload_sam_model, self.preloaded_image
+            )
+            self.preload_worker.moveToThread(self.preload_thread)
 
-        # Connect signals - but don't connect to any ImageView signals that might trigger UI updates
-        self.preload_thread.started.connect(self.preload_worker.process)
-        self.preload_worker.embedding_complete.connect(
-            self._on_preload_embedding_complete
-        )
-        self.preload_worker.finished.connect(self.preload_thread.quit)
-        self.preload_worker.finished.connect(self.preload_worker.deleteLater)
-        self.preload_thread.finished.connect(self._cleanup_preload_thread)
+            # Connect signals - but don't connect to any ImageView signals that might trigger UI updates
+            self.preload_thread.started.connect(self.preload_worker.process)
+            self.preload_worker.embedding_complete.connect(
+                self._on_preload_embedding_complete
+            )
+            self.preload_worker.finished.connect(self.preload_thread.quit)
+            self.preload_worker.finished.connect(self.preload_worker.deleteLater)
+            self.preload_thread.finished.connect(self._cleanup_preload_thread)
 
-        # Start preloading in background (silently, no UI updates)
-        self.preload_thread.start()
-        print(
-            f"Started preloading embedding for image {self.preloaded_image_idx + 1} (silent, using separate SAM model)"
-        )
+            # Start preloading in background (silently, no UI updates)
+            self.preload_thread.start()
+            print(
+                f"Started preloading embedding for image {self.preloaded_image_idx + 1} (silent, using separate SAM model)"
+            )
+        except Exception as e:
+            print(f"Error starting preload embedding: {str(e)}")
+            # Clean up on error
+            try:
+                if self.preload_thread is not None:
+                    self._cleanup_preload_thread()
+            except Exception:
+                pass
 
     def _on_preload_embedding_complete(self):
         """Called when preload embedding is complete"""
@@ -1067,23 +1119,148 @@ class MainWindow(QMainWindow):
 
     def _cleanup_preload_thread(self):
         """Clean up preload thread resources"""
+        self.preload_cleanup_in_progress = True
         try:
             if self.preload_thread is not None:
-                self.preload_thread.deleteLater()
+                # Ensure thread is not running before deletion
+                try:
+                    if self.preload_thread.isRunning():
+                        # Thread is still running, wait for it to finish
+                        if not self.preload_thread.wait(500):
+                            # Force termination if it doesn't finish
+                            try:
+                                self.preload_thread.terminate()
+                                self.preload_thread.wait(200)
+                            except RuntimeError:
+                                pass
+                except RuntimeError:
+                    pass  # Thread already deleted or in invalid state
+
+                # Disconnect all signals before deletion
+                try:
+                    if self.preload_worker is not None:
+                        try:
+                            self.preload_worker.embedding_complete.disconnect()
+                            self.preload_worker.finished.disconnect()
+                        except (RuntimeError, TypeError):
+                            pass
+                except RuntimeError:
+                    pass
+
+                try:
+                    self.preload_thread.started.disconnect()
+                    self.preload_thread.finished.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+
+                # Only delete if thread is definitely not running
+                try:
+                    if not self.preload_thread.isRunning():
+                        self.preload_thread.deleteLater()
+                    else:
+                        # Thread is still running, don't delete - let it finish naturally
+                        # The finished signal will trigger cleanup again
+                        print("Warning: Thread still running, deferring deletion")
+                        # Reconnect finished signal to retry cleanup
+                        try:
+                            self.preload_thread.finished.connect(
+                                self._cleanup_preload_thread
+                            )
+                        except Exception:
+                            pass
+                        # Don't clear reference yet - let finished signal handle it
+                        return
+                except RuntimeError:
+                    pass
+
                 self.preload_thread = None
-        except RuntimeError:
-            pass
+
+            # Clear worker reference
+            if self.preload_worker is not None:
+                try:
+                    self.preload_worker.deleteLater()
+                except RuntimeError:
+                    pass
+                self.preload_worker = None
+        except Exception as e:
+            print(f"Error in thread cleanup: {str(e)}")
+        finally:
+            self.preload_cleanup_in_progress = False
 
     def cancel_preload(self):
         """Cancel any ongoing preload operations"""
         if self.preload_thread is not None:
             try:
                 if self.preload_thread.isRunning():
+                    # Disconnect all signals to prevent callbacks on stale thread
+                    if self.preload_worker is not None:
+                        try:
+                            self.preload_worker.embedding_complete.disconnect()
+                            self.preload_worker.finished.disconnect()
+                        except (RuntimeError, TypeError):
+                            pass  # Signals already disconnected or object deleted
+
+                    try:
+                        self.preload_thread.started.disconnect()
+                        self.preload_thread.finished.disconnect()
+                    except (RuntimeError, TypeError):
+                        pass  # Signals already disconnected
+
+                    # Quit the thread and wait for it to finish (with timeout)
                     self.preload_thread.quit()
-                    # Don't wait - let it finish in background to avoid blocking
+                    # Wait up to 1000ms for thread to finish
+                    if not self.preload_thread.wait(1000):
+                        # Thread didn't finish in time, force termination
+                        print(
+                            "Warning: Preload thread did not finish in time, forcing cleanup"
+                        )
+                        try:
+                            if self.preload_thread.isRunning():
+                                self.preload_thread.terminate()
+                                self.preload_thread.wait(
+                                    500
+                                )  # Wait a bit more for termination
+                        except RuntimeError:
+                            pass
+
+                # Clean up worker if it exists (before thread cleanup)
+                if self.preload_worker is not None:
+                    try:
+                        self.preload_worker.deleteLater()
+                    except RuntimeError:
+                        pass
+                    self.preload_worker = None
+
+                # Clean up thread manually (since we disconnected the finished signal)
+                # Check if cleanup is not already in progress to avoid double cleanup
+                if not self.preload_cleanup_in_progress:
+                    self._cleanup_preload_thread()
+                else:
+                    # Cleanup already in progress, just clear references
+                    # Wait a bit for cleanup to complete
+                    max_wait = 20
+                    wait_count = 0
+                    while self.preload_cleanup_in_progress and wait_count < max_wait:
+                        if QApplication.instance() is not None:
+                            QApplication.instance().processEvents()
+                        wait_count += 1
+                        QThread.msleep(10)
+                    # If still in progress, force cleanup
+                    if self.preload_cleanup_in_progress:
+                        try:
+                            if self.preload_thread is not None:
+                                self.preload_thread = None
+                        except Exception:
+                            pass
             except RuntimeError:
                 pass
-            # Cleanup will happen when thread finishes via _cleanup_preload_thread
+            except Exception as e:
+                print(f"Error cancelling preload: {str(e)}")
+                # Ensure cleanup happens even on error
+                try:
+                    self._cleanup_preload_thread()
+                except Exception:
+                    pass
 
     def on_segment_selected(self, segment_id: str):
         """Handle segment selection from panel"""
@@ -1574,9 +1751,27 @@ class MainWindow(QMainWindow):
 
     def skip_image(self):
         """Skip current image and move to next without creating output files"""
+        # Prevent skipping while an image is loading
+        if self.is_loading_image:
+            print("Image is currently loading, please wait before skipping")
+            return
+
+        # Prevent skipping while thread cleanup is in progress
+        if self.preload_cleanup_in_progress:
+            print("Thread cleanup in progress, please wait before skipping")
+            return
+
         if self.current_image_path is None:
             QMessageBox.warning(self, "Warning", "No image loaded to skip")
             return
+
+        # Cancel ImageView's SAM embedding immediately (non-blocking)
+        if hasattr(self.image_view, "cancel_sam_embedding"):
+            self.image_view.cancel_sam_embedding()
+            # Process events briefly (1-2 times) to allow cancellation to start
+            if QApplication.instance() is not None:
+                QApplication.instance().processEvents()
+                QApplication.instance().processEvents()
 
         # Move to next image without saving
         if self.current_image_idx < len(self.image_paths) - 1:
@@ -1588,9 +1783,9 @@ class MainWindow(QMainWindow):
                 self.preloaded_image_idx is not None
                 and self.preloaded_image_idx != next_idx
             ):
-                # Cancel preload for wrong image
+                # Cancel preload for wrong image (non-blocking)
                 self.cancel_preload()
-                # Process events to ensure thread cleanup completes
+                # Process events once to allow cancellation to start
                 if QApplication.instance() is not None:
                     QApplication.instance().processEvents()
 
@@ -1603,6 +1798,11 @@ class MainWindow(QMainWindow):
 
     def save_and_next_image(self):
         """Save image and label to output folders, then move to next image"""
+        # Prevent saving/loading while an image is loading
+        if self.is_loading_image:
+            print("Image is currently loading, please wait before saving")
+            return
+
         if self.current_image_path is None:
             QMessageBox.warning(self, "Warning", "No image loaded to save")
             return

@@ -5,30 +5,32 @@ Replicates the functionality of the React TopBar component
 
 import os
 import re
-from typing import Optional, List
+from typing import List, Optional
+
+from PySide6.QtCore import QByteArray, QPoint, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
-    QWidget,
-    QHBoxLayout,
-    QVBoxLayout,
-    QLabel,
-    QPushButton,
+    QColorDialog,
     QDialog,
     QDialogButtonBox,
-    QLineEdit,
-    QColorDialog,
-    QMenu,
-    QScrollArea,
     QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QPushButton,
+    QScrollArea,
+    QStyledItemDelegate,
+    QVBoxLayout,
+    QWidget,
 )
-from PySide6.QtCore import Qt, Signal, QSize, QByteArray, QPoint
-from PySide6.QtGui import QColor, QPainter, QIcon, QPixmap
-from PySide6.QtWidgets import QStyledItemDelegate
-from PySide6.QtSvg import QSvgRenderer
+
 from frontend.theme import (
-    get_topbar_style,
     ITEM_BG,
     ITEM_BORDER,
     TEXT_COLOR,
+    get_topbar_style,
 )
 
 # Get the directory of this file to resolve icon paths

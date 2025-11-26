@@ -6,20 +6,22 @@ Replicates the functionality of the React Toolbar component
 import os
 import re
 from typing import Literal, Optional
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel
-from PySide6.QtCore import Qt, Signal, QSize, QByteArray
-from PySide6.QtGui import QColor, QIcon, QPixmap, QPainter
+
+from PySide6.QtCore import QByteArray, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtWidgets import QLabel, QPushButton, QVBoxLayout, QWidget
+
+import config
 from frontend.theme import (
     ITEM_BG,
     ITEM_BORDER,
-    TEXT_COLOR,
-    TOPBAR_TEXT_MUTED,
     PRIMARY_COLOR,
     PRIMARY_HOVER,
     PRIMARY_PRESSED,
+    TEXT_COLOR,
+    TOPBAR_TEXT_MUTED,
 )
-import config
 
 # Tool type definition
 Tool = Literal["select", "point", "box", "brush", "erase", "pan", "segment", "bbox"]

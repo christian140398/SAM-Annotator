@@ -5,8 +5,10 @@ Functions for exporting annotations in COCO format
 
 import json
 import os
+
 import numpy as np
 from pycocotools import mask as mask_utils
+
 from segmentation.sam_utils import mask_to_rle
 
 

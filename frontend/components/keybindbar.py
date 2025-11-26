@@ -3,9 +3,11 @@ KeybindsBar component for SAM Annotator
 Displays keyboard shortcuts in a bottom bar
 """
 
-from typing import List, Dict
-from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel
+from typing import Dict, List
+
 from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
+
 from frontend.theme import ITEM_BORDER, TEXT_COLOR, TOPBAR_TEXT_MUTED
 
 

@@ -5,26 +5,28 @@ Replicates the functionality of the React SegmentsPanel component
 
 import os
 import re
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
+
+from PySide6.QtCore import QByteArray, QSize, Qt, Signal
+from PySide6.QtGui import QIcon, QPainter, QPixmap
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
-    QPushButton,
     QLineEdit,
+    QPushButton,
     QScrollArea,
-    QFrame,
+    QVBoxLayout,
+    QWidget,
 )
-from PySide6.QtCore import Qt, Signal, QByteArray, QSize
-from PySide6.QtGui import QIcon, QPixmap, QPainter
-from PySide6.QtSvg import QSvgRenderer
+
 from frontend.theme import (
+    BACKGROUND_MAIN,
     ITEM_BG,
     ITEM_BORDER,
-    TEXT_COLOR,
-    BACKGROUND_MAIN,
     PRIMARY_COLOR,
+    TEXT_COLOR,
 )
 
 # Get the directory of this file to resolve icon paths

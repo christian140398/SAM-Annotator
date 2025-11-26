@@ -3,28 +3,30 @@ ImageView component for SAM Annotator
 Image display/view area component with SAM segmentation support
 """
 
-from typing import Optional, List, Tuple
-import numpy as np
+from typing import List, Optional, Tuple
+
 import cv2
-from PySide6.QtWidgets import (
-    QWidget,
-    QLabel,
-    QHBoxLayout,
-    QVBoxLayout,
-    QProgressBar,
-    QApplication,
-)
-from PySide6.QtCore import Qt, Signal, QPoint, QThread, QObject, QTimer
+import numpy as np
+from PySide6.QtCore import QObject, QPoint, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import (
-    QImage,
-    QPixmap,
-    QPainter,
     QColor,
-    QWheelEvent,
-    QKeyEvent,
     QCursor,
+    QImage,
+    QKeyEvent,
+    QPainter,
+    QPixmap,
+    QWheelEvent,
 )
-from frontend.theme import CANVAS_BG, ITEM_BORDER, TEXT_COLOR, ITEM_BG
+from PySide6.QtWidgets import (
+    QApplication,
+    QHBoxLayout,
+    QLabel,
+    QProgressBar,
+    QVBoxLayout,
+    QWidget,
+)
+
+from frontend.theme import CANVAS_BG, ITEM_BG, ITEM_BORDER, TEXT_COLOR
 from segmentation.sam_model import SAMModel
 
 
@@ -124,6 +126,11 @@ class ImageView(QWidget):
         self.sam_thread: Optional[QThread] = None
         self.sam_worker: Optional[SAMImageProcessor] = None
         self.sam_ready = False  # Flag to track if SAM processing is complete
+        self.sam_embedding_in_progress = False  # Flag to prevent concurrent embeddings
+        self.sam_cleanup_in_progress = False  # Flag to track cleanup state
+        self.sam_embedding_cancelled = (
+            False  # Flag to prevent signals from cancelled embeddings
+        )
 
         # Segmentation state
         self.current_points: List[
@@ -335,15 +342,18 @@ class ImageView(QWidget):
         if self.loading_indicator is None:
             return
 
-        # Only show loading indicator if:
+        # Show loading indicator if:
         # 1. SAM is not ready
         # 2. Base image is loaded
-        # 3. We have an active SAM thread (meaning we're actively embedding the CURRENT image)
-        # This prevents showing the indicator during preloading of the next image
+        # 3. We're actively embedding (either thread is running OR embedding is in progress)
+        # This ensures the indicator shows whenever we're embedding the current image
         is_actively_embedding = (
-            self.sam_thread is not None
-            and self.sam_thread.isRunning()
-            and self.sam_worker is not None
+            self.sam_embedding_in_progress  # Embedding has started
+            or (
+                self.sam_thread is not None
+                and self.sam_thread.isRunning()
+                and self.sam_worker is not None
+            )  # Or thread is actively running
         )
 
         if not self.sam_ready and self.base_image is not None and is_actively_embedding:
@@ -548,33 +558,63 @@ class ImageView(QWidget):
 
     def _process_sam_image_async(self, img):
         """Process image with SAM model in background thread"""
-        # Cancel any existing processing
+        # Prevent concurrent embeddings
+        if self.sam_embedding_in_progress:
+            print("SAM embedding already in progress, skipping concurrent request")
+            return
+
+        # Prevent starting if cleanup is in progress
+        if self.sam_cleanup_in_progress:
+            print("Thread cleanup in progress, skipping embedding start")
+            return
+
+        # Set embedding flag and clear cancelled flag
+        self.sam_embedding_in_progress = True
+        self.sam_embedding_cancelled = False
+
+        # Cancel any existing processing (non-blocking - don't wait)
         if self.sam_thread is not None:
+            self.cancel_sam_embedding()
+            # Don't wait - just proceed. Cleanup will happen asynchronously
+            # Process events once to allow cancellation to start
+            if QApplication.instance() is not None:
+                QApplication.instance().processEvents()
+
+        try:
+            # Create new thread and worker
+            self.sam_thread = QThread()
+            self.sam_worker = SAMImageProcessor(self.sam_model, img)
+            self.sam_worker.moveToThread(self.sam_thread)
+
+            # Connect signals
+            self.sam_thread.started.connect(self.sam_worker.process)
+            self.sam_worker.processing_complete.connect(self._on_sam_ready)
+            self.sam_worker.finished.connect(self.sam_thread.quit)
+            self.sam_worker.finished.connect(self.sam_worker.deleteLater)
+            self.sam_thread.finished.connect(self._cleanup_thread)
+
+            # Update loading indicator to show it's starting
+            self.update_loading_indicator()
+
+            # Start processing in background
+            self.sam_thread.start()
+        except Exception as e:
+            print(f"Error starting SAM embedding: {str(e)}")
+            # Reset flag on error
+            self.sam_embedding_in_progress = False
+            # Clean up on error
             try:
-                if self.sam_thread.isRunning():
-                    self.sam_thread.quit()
-                    self.sam_thread.wait(1000)  # Wait up to 1 second
-            except RuntimeError:
-                # Thread already deleted, ignore
+                if self.sam_thread is not None:
+                    self._cleanup_thread()
+            except Exception:
                 pass
-
-        # Create new thread and worker
-        self.sam_thread = QThread()
-        self.sam_worker = SAMImageProcessor(self.sam_model, img)
-        self.sam_worker.moveToThread(self.sam_thread)
-
-        # Connect signals
-        self.sam_thread.started.connect(self.sam_worker.process)
-        self.sam_worker.processing_complete.connect(self._on_sam_ready)
-        self.sam_worker.finished.connect(self.sam_thread.quit)
-        self.sam_worker.finished.connect(self.sam_worker.deleteLater)
-        self.sam_thread.finished.connect(self._cleanup_thread)
-
-        # Start processing in background
-        self.sam_thread.start()
 
     def _on_sam_ready(self):
         """Called when SAM processing is complete"""
+        # Don't emit signal if embedding was cancelled
+        if self.sam_embedding_cancelled:
+            return
+
         self.sam_ready = True
         print("SAM is ready for segmentation")
         # Hide loading indicator
@@ -584,15 +624,161 @@ class ImageView(QWidget):
         # Emit signal to notify that embedding is complete
         self.sam_embedding_complete.emit()
 
+    def cancel_sam_embedding(self):
+        """Cancel any ongoing SAM embedding operations (non-blocking)"""
+        if self.sam_thread is not None:
+            try:
+                if self.sam_thread.isRunning():
+                    # Disconnect all signals to prevent callbacks on stale thread
+                    # Check if objects are valid before disconnecting
+                    if self.sam_worker is not None:
+                        try:
+                            # Only try to disconnect if worker still exists
+                            if hasattr(self.sam_worker, "processing_complete"):
+                                self.sam_worker.processing_complete.disconnect()
+                            if hasattr(self.sam_worker, "finished"):
+                                self.sam_worker.finished.disconnect()
+                        except (RuntimeError, TypeError, AttributeError):
+                            pass  # Signals already disconnected or object deleted
+
+                    try:
+                        # Only try to disconnect if thread still exists
+                        if hasattr(self.sam_thread, "started"):
+                            self.sam_thread.started.disconnect()
+                        if hasattr(self.sam_thread, "finished"):
+                            self.sam_thread.finished.disconnect()
+                    except (RuntimeError, TypeError, AttributeError):
+                        pass  # Signals already disconnected
+
+                    # Quit the thread immediately (non-blocking - don't wait)
+                    self.sam_thread.quit()
+                    # Reconnect finished signal to ensure cleanup happens asynchronously
+                    try:
+                        # Try to connect - if already connected, this will be a no-op
+                        self.sam_thread.finished.connect(self._cleanup_thread)
+                    except (RuntimeError, TypeError):
+                        pass
+                    # Don't wait - cleanup will happen via finished signal
+
+                # Clean up worker if it exists
+                if self.sam_worker is not None:
+                    try:
+                        self.sam_worker.deleteLater()
+                    except RuntimeError:
+                        pass
+                    self.sam_worker = None
+
+                # Reset embedding flag and mark as cancelled
+                self.sam_embedding_in_progress = False
+                self.sam_embedding_cancelled = True
+            except RuntimeError:
+                pass
+            except Exception as e:
+                print(f"Error cancelling SAM embedding: {str(e)}")
+                # Ensure cleanup happens even on error
+                try:
+                    self._cleanup_thread()
+                except Exception:
+                    pass
+
     def _cleanup_thread(self):
         """Clean up thread resources"""
+        # Prevent concurrent cleanup
+        if self.sam_cleanup_in_progress:
+            return
+
+        self.sam_cleanup_in_progress = True
         try:
             if self.sam_thread is not None:
-                self.sam_thread.deleteLater()
-                self.sam_thread = None
-        except RuntimeError:
-            # Thread already deleted, ignore
-            pass
+                thread_to_clean = self.sam_thread
+                self.sam_thread = None  # Clear reference immediately to prevent reuse
+
+                # Ensure thread is not running before deletion
+                try:
+                    if thread_to_clean.isRunning():
+                        # Thread is still running, wait longer for it to finish
+                        if not thread_to_clean.wait(500):
+                            # Force termination if it doesn't finish
+                            try:
+                                thread_to_clean.terminate()
+                                if not thread_to_clean.wait(300):
+                                    # Still running after terminate, don't delete yet
+                                    # Schedule cleanup to try again later
+                                    print(
+                                        "Warning: Thread still running after terminate, will retry cleanup"
+                                    )
+                                    # Reconnect finished signal to retry cleanup
+                                    try:
+                                        thread_to_clean.finished.connect(
+                                            self._cleanup_thread
+                                        )
+                                    except Exception:
+                                        pass
+                                    # Don't delete yet - let it finish naturally
+                                    # Restore reference so it doesn't get garbage collected
+                                    self.sam_thread = thread_to_clean
+                                    self.sam_cleanup_in_progress = False
+                                    return
+                            except RuntimeError:
+                                pass
+                except RuntimeError:
+                    pass  # Thread already deleted or in invalid state
+
+                # Disconnect all signals before deletion
+                try:
+                    if self.sam_worker is not None:
+                        try:
+                            # Only try to disconnect if worker still exists and has the signal
+                            if hasattr(self.sam_worker, "processing_complete"):
+                                self.sam_worker.processing_complete.disconnect()
+                            if hasattr(self.sam_worker, "finished"):
+                                self.sam_worker.finished.disconnect()
+                        except (RuntimeError, TypeError, AttributeError):
+                            pass
+                except RuntimeError:
+                    pass
+
+                try:
+                    # Only try to disconnect if thread still exists and has the signals
+                    if hasattr(thread_to_clean, "started"):
+                        thread_to_clean.started.disconnect()
+                    if hasattr(thread_to_clean, "finished"):
+                        thread_to_clean.finished.disconnect()
+                except (RuntimeError, TypeError, AttributeError):
+                    pass
+
+                # Only delete if thread is definitely not running
+                try:
+                    if not thread_to_clean.isRunning():
+                        thread_to_clean.deleteLater()
+                    else:
+                        # Thread is still running, don't delete - let it finish naturally
+                        # The finished signal will trigger cleanup again
+                        print("Warning: Thread still running, deferring deletion")
+                        # Keep reference temporarily and let finished signal handle it
+                        self.sam_thread = thread_to_clean
+                        try:
+                            thread_to_clean.finished.connect(self._cleanup_thread)
+                        except Exception:
+                            pass
+                        self.sam_cleanup_in_progress = False
+                        return
+                except RuntimeError:
+                    pass
+
+            # Clear worker reference
+            if self.sam_worker is not None:
+                try:
+                    self.sam_worker.deleteLater()
+                except RuntimeError:
+                    pass
+                self.sam_worker = None
+        except Exception as e:
+            print(f"Error in thread cleanup: {str(e)}")
+        finally:
+            self.sam_cleanup_in_progress = False
+            self.sam_embedding_in_progress = False
+            self.sam_embedding_cancelled = False
 
     def set_current_label(self, label_id: Optional[str]):
         """Set the current label for new segments"""
