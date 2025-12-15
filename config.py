@@ -17,3 +17,7 @@ BOUNDING_BOX_EXISTS = False
 # Label name for bounding boxes when saved to output/bb_labels folder
 # This label will be used in the saved annotation files (VOC XML or COCO JSON)
 BB_LABEL = "drone"
+
+# Edit mode: If True, load images and annotations from output/ folder for editing
+# If False, load images from input/ folder and create new annotations
+EDIT_MODE = True

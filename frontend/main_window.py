@@ -3,6 +3,7 @@ Main window for SAM Annotator using PySide6
 """
 
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -240,6 +241,10 @@ class MainWindow(QMainWindow):
         # Loading state - prevent concurrent image loading
         self.is_loading_image = False  # Flag to prevent concurrent image loads
 
+        # Change tracking for edit mode
+        self.loaded_bbox: Optional[Tuple[int, int, int, int]] = None
+        self.loaded_segments: Optional[List[Tuple[np.ndarray, str]]] = None
+
         # Initialize SAM model
         self.init_sam_model()
 
@@ -408,18 +413,26 @@ class MainWindow(QMainWindow):
             self.current_label_id = self.labels[0]["id"]
 
     def load_image_list(self):
-        """Load list of images from input/images directory in folder order"""
-        if not os.path.isdir(IMG_DIR):
+        """Load list of images from input/images or output/images directory in folder order"""
+        # Choose directory based on edit mode
+        if config.EDIT_MODE:
+            source_dir = OUTPUT_IMG_DIR
+            print("Edit mode: Loading images from output/images")
+        else:
+            source_dir = IMG_DIR
+            print("Normal mode: Loading images from input/images")
+
+        if not os.path.isdir(source_dir):
             # Create directory if it doesn't exist
-            os.makedirs(IMG_DIR, exist_ok=True)
-            print(f"No images directory found at {IMG_DIR}. Created directory.")
+            os.makedirs(source_dir, exist_ok=True)
+            print(f"No images directory found at {source_dir}. Created directory.")
             return
 
         # Get all image files with their full paths
         image_files = []
-        for filename in os.listdir(IMG_DIR):
+        for filename in os.listdir(source_dir):
             if filename.lower().endswith((".jpg", ".jpeg", ".png")):
-                full_path = os.path.join(IMG_DIR, filename)
+                full_path = os.path.join(source_dir, filename)
                 image_files.append(full_path)
 
         # Sort using natural/numeric sorting to handle f1, f2, f10 correctly
@@ -427,7 +440,7 @@ class MainWindow(QMainWindow):
         # This will sort f1, f2, f3... f10, f11... f35 in the correct order
         self.image_paths = sorted(image_files, key=natural_sort_key)
 
-        print(f"Found {len(self.image_paths)} image(s) in {IMG_DIR}")
+        print(f"Found {len(self.image_paths)} image(s) in {source_dir}")
         if self.image_paths:
             print(f"First image: {os.path.basename(self.image_paths[0])}")
             # Print all images for debugging
@@ -436,7 +449,12 @@ class MainWindow(QMainWindow):
                 print(f"  {i + 1}. {os.path.basename(path)}")
 
         # Find the first unprocessed image (skip images that already exist in output folder)
-        self.find_first_unprocessed_image()
+        # Only do this in normal mode, not in edit mode
+        if not config.EDIT_MODE:
+            self.find_first_unprocessed_image()
+        else:
+            # In edit mode, start from first image
+            self.current_image_idx = 0
 
     def find_first_unprocessed_image(self):
         """
@@ -641,6 +659,69 @@ class MainWindow(QMainWindow):
 
             # Reset segment ID mapping for new image
             self._segment_id_map = {}
+
+            # In edit mode, load existing annotations from output folders
+            if config.EDIT_MODE:
+                # Get base name without extension
+                base_name = os.path.splitext(os.path.basename(img_path))[0]
+
+                # Get image dimensions for mask creation
+                if (
+                    hasattr(self.image_view, "base_image")
+                    and self.image_view.base_image is not None
+                ):
+                    img_h, img_w = self.image_view.base_image.shape[:2]
+                else:
+                    img = cv2.imread(img_path)
+                    if img is not None:
+                        img_h, img_w = img.shape[:2]
+                    else:
+                        img_h, img_w = 0, 0
+
+                # Load bounding box from output/bb_labels
+                loaded_bbox = self.load_bbox_from_output(base_name)
+                if loaded_bbox is not None:
+                    self.image_view.bounding_box = loaded_bbox
+                    print(f"Loaded bounding box from output: {loaded_bbox}")
+                else:
+                    self.image_view.bounding_box = None
+                    print("No bounding box found in output/bb_labels")
+
+                # Load segments from output/segment_labels
+                loaded_segments = self.load_segments_from_output(
+                    base_name, img_h, img_w
+                )
+                if loaded_segments:
+                    # Set finalized masks and labels
+                    self.image_view.finalized_masks = [
+                        mask for mask, _ in loaded_segments
+                    ]
+                    self.image_view.finalized_labels = [
+                        label_id for _, label_id in loaded_segments
+                    ]
+                    print(f"Loaded {len(loaded_segments)} segment(s) from output")
+                    # Invalidate overlay cache to show loaded segments
+                    self.image_view.overlay_cache_valid = False
+                    self.image_view.update_display()
+                    self.image_view.update()
+                else:
+                    self.image_view.finalized_masks = []
+                    self.image_view.finalized_labels = []
+                    print("No segments found in output/segment_labels")
+
+                # Store loaded state for change tracking
+                # Make deep copies of masks to ensure independent comparison
+                self.loaded_bbox = loaded_bbox
+                if loaded_segments:
+                    self.loaded_segments = [
+                        (mask.copy(), label_id) for mask, label_id in loaded_segments
+                    ]
+                else:
+                    self.loaded_segments = []
+            else:
+                # In normal mode, reset change tracking
+                self.loaded_bbox = None
+                self.loaded_segments = None
 
             # Update topbar
             self.topbar.set_image_name(os.path.basename(img_path))
@@ -1482,6 +1563,225 @@ class MainWindow(QMainWindow):
 
         return input_objects
 
+    def _parse_polygon(self, polygon_str: str) -> Optional[np.ndarray]:
+        """
+        Parse polygon string "x1,y1 x2,y2 x3,y3 ..." into numpy array of points.
+
+        Args:
+            polygon_str: String containing polygon coordinates
+
+        Returns:
+            numpy array of shape (N, 2) with x,y coordinates, or None
+        """
+        if not polygon_str or not polygon_str.strip():
+            return None
+
+        points = []
+        for point_str in polygon_str.strip().split():
+            if "," in point_str:
+                x, y = point_str.split(",")
+                points.append([float(x), float(y)])
+
+        if len(points) < 3:  # Need at least 3 points for a polygon
+            return None
+
+        return np.array(points, dtype=np.int32)
+
+    def _polygon_to_mask(
+        self, polygon_points: np.ndarray, height: int, width: int
+    ) -> np.ndarray:
+        """
+        Convert polygon points to a boolean mask.
+
+        Args:
+            polygon_points: numpy array of shape (N, 2) with x,y coordinates
+            height: Image height
+            width: Image width
+
+        Returns:
+            Boolean mask array of shape (height, width)
+        """
+        mask = np.zeros((height, width), dtype=bool)
+        if polygon_points is not None and len(polygon_points) >= 3:
+            # Reshape for cv2.fillPoly
+            pts = polygon_points.reshape((-1, 1, 2))
+            cv2.fillPoly(mask, [pts], True)
+        return mask
+
+    def _label_name_to_id(self, label_name: str) -> Optional[str]:
+        """
+        Convert label name to label ID.
+
+        Args:
+            label_name: Label name string
+
+        Returns:
+            Label ID string, or None if not found
+        """
+        for label in self.labels:
+            if label["name"] == label_name:
+                return label["id"]
+        return None
+
+    def load_segments_from_output(
+        self, base_name: str, image_height: int, image_width: int
+    ) -> List[Tuple[np.ndarray, str]]:
+        """
+        Load segments from output/segment_labels folder.
+
+        Args:
+            base_name: Base filename without extension
+            image_height: Image height for mask creation
+            image_width: Image width for mask creation
+
+        Returns:
+            List of (mask, label_id) tuples
+        """
+        segments = []
+
+        # Try to detect format by checking which file exists
+        xml_path = os.path.join(OUTPUT_LABEL_DIR, base_name + ".xml")
+        json_path = os.path.join(OUTPUT_LABEL_DIR, base_name + ".json")
+
+        format_type = None
+        annotation_path = None
+
+        if os.path.exists(xml_path):
+            format_type = "voc"
+            annotation_path = xml_path
+        elif os.path.exists(json_path):
+            format_type = "coco"
+            annotation_path = json_path
+        else:
+            # No annotation file found
+            return segments
+
+        try:
+            if format_type == "voc":
+                # Load from VOC XML
+                tree = ET.parse(annotation_path)
+                root = tree.getroot()
+
+                for obj in root.findall("object"):
+                    # Get label name
+                    name_elem = obj.find("name")
+                    label_name = name_elem.text if name_elem is not None else "unknown"
+
+                    # Get segmentation polygon
+                    polygon_points = None
+                    seg_elem = obj.find("segmentation")
+                    if seg_elem is not None:
+                        polygon_elem = seg_elem.find("polygon")
+                        if polygon_elem is not None and polygon_elem.text:
+                            polygon_points = self._parse_polygon(polygon_elem.text)
+
+                    # Convert polygon to mask
+                    if polygon_points is not None:
+                        mask = self._polygon_to_mask(
+                            polygon_points, image_height, image_width
+                        )
+                        # Convert label name to label ID
+                        label_id = self._label_name_to_id(label_name)
+                        if label_id is not None and mask.any():
+                            segments.append((mask, label_id))
+
+            elif format_type == "coco":
+                # Load from COCO JSON
+                with open(annotation_path, "r", encoding="utf-8") as f:
+                    coco_data = json.load(f)
+
+                # Create category ID to name mapping
+                category_map = {}
+                for cat in coco_data.get("categories", []):
+                    category_map[cat["id"]] = cat["name"]
+
+                # Process annotations
+                for ann in coco_data.get("annotations", []):
+                    category_id = ann.get("category_id")
+                    label_name = category_map.get(category_id, "unknown")
+
+                    # Get segmentation (RLE format)
+                    seg = ann.get("segmentation")
+                    if seg:
+                        # Check if it's RLE format (dict with 'size' and 'counts')
+                        if isinstance(seg, dict) and "size" in seg and "counts" in seg:
+                            try:
+                                # Convert RLE to mask
+                                from segmentation.sam_utils import rle_to_mask
+
+                                mask = rle_to_mask(seg)
+                                # Verify mask dimensions match image
+                                if (
+                                    mask.shape[0] == image_height
+                                    and mask.shape[1] == image_width
+                                ):
+                                    # Convert label name to label ID
+                                    label_id = self._label_name_to_id(label_name)
+                                    if label_id is not None and mask.any():
+                                        segments.append((mask, label_id))
+                            except Exception as e:
+                                print(f"Warning: Could not convert RLE to mask: {e}")
+
+        except Exception as e:
+            print(f"Warning: Could not load segments from {annotation_path}: {e}")
+
+        return segments
+
+    def load_bbox_from_output(
+        self, base_name: str
+    ) -> Optional[Tuple[int, int, int, int]]:
+        """
+        Load bounding box from output/bb_labels folder.
+
+        Args:
+            base_name: Base filename without extension
+
+        Returns:
+            Tuple (xmin, ymin, xmax, ymax) or None if not found
+        """
+        # Try to detect format by checking which file exists
+        xml_path = os.path.join(OUTPUT_BB_LABEL_DIR, base_name + ".xml")
+        json_path = os.path.join(OUTPUT_BB_LABEL_DIR, base_name + ".json")
+
+        format_type = None
+        annotation_path = None
+
+        if os.path.exists(xml_path):
+            format_type = "voc"
+            annotation_path = xml_path
+        elif os.path.exists(json_path):
+            format_type = "coco"
+            annotation_path = json_path
+        else:
+            # No annotation file found
+            return None
+
+        try:
+            if format_type == "voc":
+                # Use existing load_voc_box function
+                from segmentation.sam_utils import load_voc_box
+
+                return load_voc_box(annotation_path)
+
+            elif format_type == "coco":
+                # Load from COCO JSON
+                with open(annotation_path, "r", encoding="utf-8") as f:
+                    coco_data = json.load(f)
+
+                # Process annotations (usually only one bbox in bb_labels files)
+                for ann in coco_data.get("annotations", []):
+                    # Get bounding box (COCO format: [x, y, width, height])
+                    bbox_coco = ann.get("bbox")
+                    if bbox_coco and len(bbox_coco) == 4:
+                        x, y, w, h = bbox_coco
+                        # Convert to (xmin, ymin, xmax, ymax)
+                        return (int(x), int(y), int(x + w), int(y + h))
+
+        except Exception as e:
+            print(f"Warning: Could not load bounding box from {annotation_path}: {e}")
+
+        return None
+
     def save_voc_xml(self, xml_path: str, image_path: str, segments: List[tuple]):
         """
         Save segments as VOC XML annotation file
@@ -1860,53 +2160,135 @@ class MainWindow(QMainWindow):
             # Get base filename
             base_name = os.path.splitext(os.path.basename(self.current_image_path))[0]
 
-            # Copy image to output/images
-            output_img_path = os.path.join(
-                OUTPUT_IMG_DIR, os.path.basename(self.current_image_path)
-            )
-            shutil.copy2(self.current_image_path, output_img_path)
+            # In edit mode, check if changes were made
+            bbox_changed = False
+            segments_changed = False
 
-            # Process events after image copy
-            if QApplication.instance() is not None:
-                QApplication.instance().processEvents()
+            if config.EDIT_MODE:
+                # Check if bounding box changed
+                current_bbox = self.image_view.bounding_box
+                if current_bbox != self.loaded_bbox:
+                    bbox_changed = True
+
+                # Check if segments changed
+                current_segments = self.image_view.get_segments()
+                if self.loaded_segments is None:
+                    # No loaded segments, but we have current segments
+                    segments_changed = len(current_segments) > 0
+                elif len(current_segments) != len(self.loaded_segments):
+                    # Different number of segments
+                    segments_changed = True
+                else:
+                    # Compare each segment (mask and label_id)
+                    for (curr_mask, curr_label), (loaded_mask, loaded_label) in zip(
+                        current_segments, self.loaded_segments
+                    ):
+                        if curr_label != loaded_label:
+                            segments_changed = True
+                            break
+                        # Compare masks using numpy array comparison
+                        if not np.array_equal(curr_mask, loaded_mask):
+                            segments_changed = True
+                            break
+
+                # If no changes were made, skip saving
+                if not bbox_changed and not segments_changed:
+                    print("No changes detected - skipping save")
+                    # Still move to next image
+                    if self.current_image_idx < len(self.image_paths) - 1:
+                        next_idx = self.current_image_idx + 1
+
+                        if (
+                            self.preloaded_image_idx is not None
+                            and self.preloaded_image_idx != next_idx
+                        ):
+                            self.cancel_preload()
+                            if QApplication.instance() is not None:
+                                QApplication.instance().processEvents()
+
+                        self.current_image_idx += 1
+                        self.load_current_image()
+                    else:
+                        QMessageBox.information(
+                            self, "Info", "Reached last image. No changes to save."
+                        )
+                    return
+
+            # Copy image to output/images (only in normal mode)
+            if not config.EDIT_MODE:
+                output_img_path = os.path.join(
+                    OUTPUT_IMG_DIR, os.path.basename(self.current_image_path)
+                )
+                shutil.copy2(self.current_image_path, output_img_path)
+
+                # Process events after image copy
+                if QApplication.instance() is not None:
+                    QApplication.instance().processEvents()
 
             # Get all segments
             segments = self.image_view.get_segments()
 
-            # Save annotations based on configured format
-            if config.EXPORT_FORMAT.lower() == "coco":
-                # COCO format: Save as JSON file
-                output_json_path = os.path.join(OUTPUT_LABEL_DIR, base_name + ".json")
-                self.save_coco_json(output_json_path, self.current_image_path, segments)
-            else:
-                # VOC format: Save as XML file (default)
-                output_xml_path = os.path.join(OUTPUT_LABEL_DIR, base_name + ".xml")
-                self.save_voc_xml(output_xml_path, self.current_image_path, segments)
-
-            # Save bounding box if it exists
-            if self.image_view.bounding_box is not None:
-                bbox = self.image_view.bounding_box
-                bb_label_name = config.BB_LABEL
-
+            # Save annotations based on configured format (only if changed in edit mode)
+            if not config.EDIT_MODE or segments_changed:
                 if config.EXPORT_FORMAT.lower() == "coco":
                     # COCO format: Save as JSON file
-                    output_bb_json_path = os.path.join(
-                        OUTPUT_BB_LABEL_DIR, base_name + ".json"
+                    output_json_path = os.path.join(
+                        OUTPUT_LABEL_DIR, base_name + ".json"
                     )
-                    self.save_coco_bbox(
-                        output_bb_json_path,
-                        self.current_image_path,
-                        bbox,
-                        bb_label_name,
+                    self.save_coco_json(
+                        output_json_path, self.current_image_path, segments
                     )
                 else:
                     # VOC format: Save as XML file (default)
+                    output_xml_path = os.path.join(OUTPUT_LABEL_DIR, base_name + ".xml")
+                    self.save_voc_xml(
+                        output_xml_path, self.current_image_path, segments
+                    )
+
+            # Save bounding box if it exists (only if changed in edit mode)
+            if self.image_view.bounding_box is not None:
+                if not config.EDIT_MODE or bbox_changed:
+                    bbox = self.image_view.bounding_box
+                    bb_label_name = config.BB_LABEL
+
+                    if config.EXPORT_FORMAT.lower() == "coco":
+                        # COCO format: Save as JSON file
+                        output_bb_json_path = os.path.join(
+                            OUTPUT_BB_LABEL_DIR, base_name + ".json"
+                        )
+                        self.save_coco_bbox(
+                            output_bb_json_path,
+                            self.current_image_path,
+                            bbox,
+                            bb_label_name,
+                        )
+                    else:
+                        # VOC format: Save as XML file (default)
+                        output_bb_xml_path = os.path.join(
+                            OUTPUT_BB_LABEL_DIR, base_name + ".xml"
+                        )
+                        self.save_voc_bbox(
+                            output_bb_xml_path,
+                            self.current_image_path,
+                            bbox,
+                            bb_label_name,
+                        )
+            elif config.EDIT_MODE and self.loaded_bbox is not None:
+                # Bounding box was deleted - remove the file
+                if config.EXPORT_FORMAT.lower() == "coco":
+                    output_bb_json_path = os.path.join(
+                        OUTPUT_BB_LABEL_DIR, base_name + ".json"
+                    )
+                    if os.path.exists(output_bb_json_path):
+                        os.remove(output_bb_json_path)
+                        print(f"Removed bounding box file: {output_bb_json_path}")
+                else:
                     output_bb_xml_path = os.path.join(
                         OUTPUT_BB_LABEL_DIR, base_name + ".xml"
                     )
-                    self.save_voc_bbox(
-                        output_bb_xml_path, self.current_image_path, bbox, bb_label_name
-                    )
+                    if os.path.exists(output_bb_xml_path):
+                        os.remove(output_bb_xml_path)
+                        print(f"Removed bounding box file: {output_bb_xml_path}")
 
             # Process events before loading next image
             if QApplication.instance() is not None:
