@@ -20,4 +20,4 @@ BB_LABEL = "drone"
 
 # Edit mode: If True, load images and annotations from output/ folder for editing
 # If False, load images from input/ folder and create new annotations
-EDIT_MODE = True
+EDIT_MODE = False
