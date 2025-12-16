@@ -3,7 +3,7 @@ ImageView component for SAM Annotator
 Image display/view area component with SAM segmentation support
 """
 
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -89,9 +89,17 @@ class ImageView(QWidget):
         self.viewport_offset_x = 0  # Offset when using viewport rendering
         self.viewport_offset_y = 0  # Offset when using viewport rendering
 
-        # Performance optimization: cache overlay image
-        self.cached_overlay_image: Optional[np.ndarray] = None  # Cached overlay (BGR)
-        self.overlay_cache_valid = False  # Whether cache is up to date
+        # Performance optimization: cache overlay images
+        self.cached_overlay_image: Optional[np.ndarray] = (
+            None  # Cached full overlay (BGR)
+        )
+        self.overlay_cache_valid = False  # Whether full overlay cache is up to date
+        self.cached_base_overlay: Optional[np.ndarray] = (
+            None  # Cached base overlay (finalized segments only)
+        )
+        self.base_overlay_valid = False  # Whether base overlay cache is up to date
+        self.base_overlay_dirty = True  # Whether base overlay needs rebuilding
+        self.dynamic_overlay_dirty = True  # Whether dynamic overlay needs rebuilding
         self.last_zoom_scale = 1.0  # Track zoom changes for cache invalidation
 
         # Zoom throttling: delay display updates during rapid zoom
@@ -144,6 +152,11 @@ class ImageView(QWidget):
             None  # (xmin, ymin, xmax, ymax)
         )
         self.hovered_segment_index: Optional[int] = None  # Index of hovered segment
+
+        # Performance: cache contours for finalized segments to avoid recalculating on hover
+        self.segment_contours: Dict[
+            int, List
+        ] = {}  # Cache of contours for each segment index
 
         # Undo history for current segment (stores mask snapshots)
         self.mask_history: List[np.ndarray] = []  # History of mask states for undo
@@ -446,9 +459,8 @@ class ImageView(QWidget):
             rgb = QColor(hex_color).getRgb()[:3]
             self.label_colors[label_id] = (rgb[2], rgb[1], rgb[0])  # RGB to BGR
 
-        # Invalidate overlay cache because label colors changed
-        self.overlay_cache_valid = False
-        self.cached_overlay_image = None
+        # Invalidate base overlay because label colors changed (affects finalized segments)
+        self.invalidate_base_overlay()
         self.update_display()
         self.update()
 
@@ -521,10 +533,12 @@ class ImageView(QWidget):
         self.viewport_offset_x = 0
         self.viewport_offset_y = 0
 
-        # Invalidate overlay cache when loading new image
-        self.overlay_cache_valid = False
-        self.cached_overlay_image = None
+        # Invalidate all overlays when loading new image
+        self.invalidate_base_overlay()
+        self.dynamic_overlay_dirty = True
         self.last_zoom_scale = 1.0
+        # Clear contour cache for old segments
+        self.segment_contours.clear()
 
         # Show image immediately (before SAM processing)
         self.update_display()
@@ -788,10 +802,26 @@ class ImageView(QWidget):
     def set_hovered_segment_index(self, segment_index: Optional[int]):
         """Set the hovered segment index for highlighting"""
         self.hovered_segment_index = segment_index
-        # Invalidate cache because hover affects overlay rendering
-        self.overlay_cache_valid = False
+        # Invalidate only dynamic overlay because hover affects dynamic rendering
+        self.invalidate_dynamic_overlay()
         self.update_display()
         self.update()
+
+    def invalidate_base_overlay(self):
+        """Invalidate base overlay cache (called when segments are added/removed/modified)"""
+        self.base_overlay_dirty = True
+        self.base_overlay_valid = False
+        self.cached_base_overlay = None
+        # Also invalidate full overlay since it depends on base
+        self.overlay_cache_valid = False
+        self.cached_overlay_image = None
+
+    def invalidate_dynamic_overlay(self):
+        """Invalidate dynamic overlay cache (called when hover, current mask, points, or bbox changes)"""
+        self.dynamic_overlay_dirty = True
+        # Only invalidate full overlay, base overlay can stay cached
+        self.overlay_cache_valid = False
+        self.cached_overlay_image = None
 
     def widget_to_image_coords(
         self, widget_x: int, widget_y: int
@@ -1003,8 +1033,8 @@ class ImageView(QWidget):
                 self.current_mask, self.bounding_box, h, w
             )
 
-        # Update display (invalidate cache when mask changes)
-        self.overlay_cache_valid = False
+        # Update display (invalidate dynamic overlay when current mask changes)
+        self.invalidate_dynamic_overlay()
         self.update_display()
         self.update()
 
@@ -1093,8 +1123,8 @@ class ImageView(QWidget):
                 self.current_mask, self.bounding_box, h, w
             )
 
-        # Update display (invalidate cache when mask changes)
-        self.overlay_cache_valid = False
+        # Update display (invalidate dynamic overlay when current mask changes)
+        self.invalidate_dynamic_overlay()
         self.update_display()
         self.update()
 
@@ -1150,9 +1180,8 @@ class ImageView(QWidget):
         # Need at least one positive point
         if len(positive_points) == 0:
             self.current_mask = None
-            # Invalidate overlay cache because mask was cleared
-            self.overlay_cache_valid = False
-            self.cached_overlay_image = None
+            # Invalidate dynamic overlay because current mask was cleared
+            self.invalidate_dynamic_overlay()
             self.update_display()
             self.update()
             return
@@ -1187,10 +1216,9 @@ class ImageView(QWidget):
         # Emit signal
         self.mask_updated.emit(mask)
 
-        # Update display (invalidate cache when mask changes)
+        # Update display (invalidate dynamic overlay when current mask changes)
         # Note: is_actively_drawing is already set by add_point, so fast scaling will be used
-        self.overlay_cache_valid = False
-        self.cached_overlay_image = None
+        self.invalidate_dynamic_overlay()
         self.update_display()
         self.update()
 
@@ -1235,8 +1263,12 @@ class ImageView(QWidget):
                 return False
 
         # Add to finalized masks
+        segment_index = len(self.finalized_masks)
         self.finalized_masks.append(self.current_mask.copy())
         self.finalized_labels.append(self.current_label_id)
+
+        # Cache contours for this new segment
+        self._get_segment_contours(segment_index, self.current_mask)
 
         # Clear current state
         self.current_points = []
@@ -1248,8 +1280,8 @@ class ImageView(QWidget):
         # Emit signal
         self.segment_finalized.emit(self.finalized_masks[-1], self.current_label_id)
 
-        # Update display (invalidate cache when mask changes)
-        self.overlay_cache_valid = False
+        # Update display (invalidate base overlay when segment is finalized)
+        self.invalidate_base_overlay()
         self.update_display()
         self.update()
 
@@ -1295,29 +1327,60 @@ class ImageView(QWidget):
             True if segment was removed, False otherwise
         """
         if self.finalized_masks:
+            segment_index = len(self.finalized_masks) - 1
             self.finalized_masks.pop()
             self.finalized_labels.pop()
-            # Invalidate overlay cache because segment was removed
-            self.overlay_cache_valid = False
-            self.cached_overlay_image = None
+            # Remove from contour cache
+            if segment_index in self.segment_contours:
+                del self.segment_contours[segment_index]
+            # Rebuild contour cache indices for remaining segments
+            # (indices shift when we remove one)
+            if segment_index > 0:
+                # Rebuild cache with correct indices
+                new_contours = {}
+                for i, mask in enumerate(self.finalized_masks):
+                    new_contours[i] = self._get_segment_contours(i, mask)
+                self.segment_contours = new_contours
+            # Invalidate base overlay because segment was removed
+            self.invalidate_base_overlay()
             self.update_display()
             self.update()
             return True
         return False
 
-    def draw_overlay(self, img: np.ndarray) -> np.ndarray:
+    def _get_segment_contours(self, segment_index: int, mask: np.ndarray) -> List:
         """
-        Draw segmentation overlays on image
+        Get contours for a segment, using cache if available
+
+        Args:
+            segment_index: Index of the segment
+            mask: The mask array for the segment
+
+        Returns:
+            List of contours
+        """
+        if segment_index not in self.segment_contours:
+            # Calculate and cache contours
+            mask_uint8 = (mask * 255).astype(np.uint8)
+            contours, _ = cv2.findContours(
+                mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
+            self.segment_contours[segment_index] = contours
+        return self.segment_contours[segment_index]
+
+    def _draw_base_overlay(self, img: np.ndarray) -> np.ndarray:
+        """
+        Draw base overlay with all finalized segments (without hover effects)
 
         Args:
             img: Base image (BGR format)
 
         Returns:
-            Image with overlays
+            Image with base overlays (finalized segments only)
         """
         overlay = img.copy()
 
-        # Draw finalized masks
+        # Draw finalized masks (normal overlay, no hover effects)
         for idx, (mask, label_id) in enumerate(
             zip(self.finalized_masks, self.finalized_labels)
         ):
@@ -1333,27 +1396,60 @@ class ImageView(QWidget):
 
             color = self.label_colors.get(label_id, (255, 0, 0))
 
-            # Highlight hovered segment with brighter color and border
-            if idx == self.hovered_segment_index:
-                # Brighter overlay for hovered segment
-                overlay[mask] = (
-                    0.4 * overlay[mask] + 0.6 * np.array(color, dtype=np.uint8)
+            # Normal overlay for all segments (hover effects handled in dynamic overlay)
+            # Use efficient NumPy operations for blending
+            mask_bool = mask.astype(bool)
+            if mask_bool.any():
+                color_array = np.array(color, dtype=np.uint8)
+                # Blend: 0.6 * overlay + 0.4 * color
+                overlay[mask_bool] = (
+                    0.6 * overlay[mask_bool].astype(np.float32)
+                    + 0.4 * color_array.astype(np.float32)
                 ).astype(np.uint8)
 
-                # Draw border around hovered segment
-                mask_uint8 = (mask * 255).astype(np.uint8)
-                contours, _ = cv2.findContours(
-                    mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-                )
-                highlight_color = (255, 255, 255)  # White border for hover
-                cv2.drawContours(overlay, contours, -1, highlight_color, 1)
-            else:
-                # Normal overlay for non-hovered segments
-                overlay[mask] = (
-                    0.6 * overlay[mask] + 0.4 * np.array(color, dtype=np.uint8)
-                ).astype(np.uint8)
+        return overlay
 
-            # Label text is no longer shown on image view (shown in segment panel instead)
+    def _draw_dynamic_overlay(self, base_overlay: np.ndarray) -> np.ndarray:
+        """
+        Draw dynamic overlay elements: hover effects, current mask, points, bounding boxes
+
+        Args:
+            base_overlay: Base overlay image with finalized segments
+
+        Returns:
+            Image with dynamic overlays added
+        """
+        overlay = base_overlay.copy()
+
+        # Draw hover effects for hovered segment
+        if self.hovered_segment_index is not None and self.hovered_segment_index < len(
+            self.finalized_masks
+        ):
+            idx = self.hovered_segment_index
+            mask = self.finalized_masks[idx]
+            label_id = self.finalized_labels[idx]
+
+            # Validate mask dimensions
+            if mask is not None and self.base_image is not None:
+                img_h, img_w = self.base_image.shape[:2]
+                mask_h, mask_w = mask.shape[:2]
+                if mask_h == img_h and mask_w == img_w:
+                    color = self.label_colors.get(label_id, (255, 0, 0))
+
+                    # Brighter overlay for hovered segment
+                    mask_bool = mask.astype(bool)
+                    if mask_bool.any():
+                        color_array = np.array(color, dtype=np.uint8)
+                        # Blend: 0.4 * overlay + 0.6 * color (brighter)
+                        overlay[mask_bool] = (
+                            0.4 * overlay[mask_bool].astype(np.float32)
+                            + 0.6 * color_array.astype(np.float32)
+                        ).astype(np.uint8)
+
+                    # Draw border around hovered segment using cached contours
+                    contours = self._get_segment_contours(idx, mask)
+                    highlight_color = (255, 255, 255)  # White border for hover
+                    cv2.drawContours(overlay, contours, -1, highlight_color, 1)
 
         # Draw current mask being built
         if self.current_mask is not None:
@@ -1363,10 +1459,14 @@ class ImageView(QWidget):
                 mask_h, mask_w = self.current_mask.shape[:2]
                 if mask_h == img_h and mask_w == img_w:
                     color = self.label_colors.get(self.current_label_id, (255, 0, 0))
-                    overlay[self.current_mask] = (
-                        0.5 * overlay[self.current_mask]
-                        + 0.5 * np.array(color, dtype=np.uint8)
-                    ).astype(np.uint8)
+                    mask_bool = self.current_mask.astype(bool)
+                    if mask_bool.any():
+                        color_array = np.array(color, dtype=np.uint8)
+                        # Blend: 0.5 * overlay + 0.5 * color
+                        overlay[mask_bool] = (
+                            0.5 * overlay[mask_bool].astype(np.float32)
+                            + 0.5 * color_array.astype(np.float32)
+                        ).astype(np.uint8)
 
                     # Draw white outline if H key is pressed (highlight current segment)
                     if self.h_pressed:
@@ -1439,6 +1539,21 @@ class ImageView(QWidget):
 
         return overlay
 
+    def draw_overlay(self, img: np.ndarray) -> np.ndarray:
+        """
+        Draw full overlay by composing base and dynamic overlays
+
+        Args:
+            img: Base image (BGR format)
+
+        Returns:
+            Image with all overlays
+        """
+        # Draw base overlay (finalized segments)
+        base = self._draw_base_overlay(img)
+        # Draw dynamic overlay (hover, current mask, points, bbox)
+        return self._draw_dynamic_overlay(base)
+
     def update_display(self, force_rebuild_overlay: bool = False):
         """
         Update the display image with overlays
@@ -1467,14 +1582,37 @@ class ImageView(QWidget):
             else False
         )
 
+        # Rebuild base overlay if dirty or zoom changed significantly
         if (
-            not self.overlay_cache_valid
+            self.base_overlay_dirty
+            or not self.base_overlay_valid
             or force_rebuild_overlay
             or (zoom_changed and not is_zooming)
         ):
-            # Draw overlays (this is expensive, so we cache it)
-            self.cached_overlay_image = self.draw_overlay(self.base_image)
+            # Rebuild base overlay (finalized segments only)
+            self.cached_base_overlay = self._draw_base_overlay(self.base_image)
+            self.base_overlay_valid = True
+            self.base_overlay_dirty = False
+            # Base overlay changed, so full overlay is also invalid
+            self.overlay_cache_valid = False
+
+        # Rebuild dynamic overlay if dirty or base changed
+        if (
+            self.dynamic_overlay_dirty
+            or not self.overlay_cache_valid
+            or force_rebuild_overlay
+            or (zoom_changed and not is_zooming)
+        ):
+            # Compose base + dynamic overlays
+            if self.cached_base_overlay is not None:
+                self.cached_overlay_image = self._draw_dynamic_overlay(
+                    self.cached_base_overlay
+                )
+            else:
+                # Fallback: rebuild everything if base overlay is missing
+                self.cached_overlay_image = self.draw_overlay(self.base_image)
             self.overlay_cache_valid = True
+            self.dynamic_overlay_dirty = False
             self.last_zoom_scale = self.zoom_scale
 
         display_img = self.cached_overlay_image
@@ -1963,8 +2101,8 @@ class ImageView(QWidget):
                     xmax = max(x1, x2)
                     ymax = max(y1, y2)
                     self.temp_bbox = (xmin, ymin, xmax, ymax)
-                    # Invalidate overlay cache so temp_bbox is drawn
-                    self.overlay_cache_valid = False
+                    # Invalidate dynamic overlay so temp_bbox is drawn
+                    self.invalidate_dynamic_overlay()
                     # Update display to show temporary bbox
                     self.update_display()
                     self.update()
@@ -2004,8 +2142,8 @@ class ImageView(QWidget):
 
                 # Update bounding box
                 self.bounding_box = (xmin, ymin, xmax, ymax)
-                # Update display (invalidate cache when bbox changes)
-                self.overlay_cache_valid = False
+                # Update display (invalidate dynamic overlay when bbox changes)
+                self.invalidate_dynamic_overlay()
                 self.update_display()
                 self.update()
         else:
@@ -2039,7 +2177,7 @@ class ImageView(QWidget):
             if self.current_mask is not None:
                 self.mask_updated.emit(self.current_mask)
             # Do a final high-quality update now that drawing stopped
-            self.overlay_cache_valid = False
+            self.invalidate_dynamic_overlay()
             self.update_display()
             self.update()
         elif (
@@ -2162,8 +2300,8 @@ class ImageView(QWidget):
         elif event.key() == Qt.Key_H and not event.isAutoRepeat():
             # Only process initial key press, not auto-repeat
             self.h_pressed = True
-            # Invalidate cache because H highlight affects overlay rendering
-            self.overlay_cache_valid = False
+            # Invalidate dynamic overlay because H highlight affects current mask rendering
+            self.invalidate_dynamic_overlay()
             # Regenerate display image with highlight and trigger redraw
             self.update_display()
             self.update()
@@ -2729,8 +2867,8 @@ class ImageView(QWidget):
         self.current_mask = None
         self.mask_history = []
         self.points_history = []
-        # Invalidate cache because we're removing the current segment
-        self.overlay_cache_valid = False
+        # Invalidate dynamic overlay because we're removing the current segment
+        self.invalidate_dynamic_overlay()
         self.update_display()
         self.update()
 
@@ -2755,6 +2893,17 @@ class ImageView(QWidget):
         self.finalized_masks.pop(segment_index)
         self.finalized_labels.pop(segment_index)
 
+        # Remove from contour cache
+        if segment_index in self.segment_contours:
+            del self.segment_contours[segment_index]
+        # Rebuild contour cache indices for remaining segments (indices shift when we remove one)
+        if segment_index < len(self.finalized_masks):
+            # Rebuild cache with correct indices
+            new_contours = {}
+            for i, m in enumerate(self.finalized_masks):
+                new_contours[i] = self._get_segment_contours(i, m)
+            self.segment_contours = new_contours
+
         # Load as current mask for editing
         self.current_mask = mask.copy()
         self.current_label_id = label_id
@@ -2767,8 +2916,10 @@ class ImageView(QWidget):
         # Update label indicator to show the correct label
         self.update_label_indicator()
 
-        # Invalidate cache to update display
-        self.overlay_cache_valid = False
+        # Invalidate base overlay because segment was removed from finalized list
+        # Also invalidate dynamic overlay because current mask changed
+        self.invalidate_base_overlay()
+        self.invalidate_dynamic_overlay()
         self.update_display()
         self.update()
 
@@ -2920,8 +3071,8 @@ class ImageView(QWidget):
             self.pan_offset_y = total_offset_y_needed - new_image_offset_y
 
         # Now update display with the correct pan offset
-        # Invalidate cache to ensure fresh display
-        self.overlay_cache_valid = False
+        # Invalidate dynamic overlay to ensure fresh display (viewport may have changed)
+        self.invalidate_dynamic_overlay()
         self.update_display()
 
         # Refine pan offset if display was capped (actual_display_scale differs from display_scale)

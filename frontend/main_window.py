@@ -700,8 +700,8 @@ class MainWindow(QMainWindow):
                         label_id for _, label_id in loaded_segments
                     ]
                     print(f"Loaded {len(loaded_segments)} segment(s) from output")
-                    # Invalidate overlay cache to show loaded segments
-                    self.image_view.overlay_cache_valid = False
+                    # Invalidate base overlay to show loaded segments
+                    self.image_view.invalidate_base_overlay()
                     self.image_view.update_display()
                     self.image_view.update()
                 else:
@@ -1385,8 +1385,8 @@ class MainWindow(QMainWindow):
             self._segment_id_map = new_map
 
         self.update_segments_panel()
-        # Invalidate overlay cache because segment was deleted
-        self.image_view.overlay_cache_valid = False
+        # Invalidate base overlay because segment was deleted
+        self.image_view.invalidate_base_overlay()
         self.image_view.update_display()
         self.image_view.update()
 
@@ -1409,8 +1409,8 @@ class MainWindow(QMainWindow):
         ):
             self.image_view.finalized_labels[segment_idx] = label_id
 
-        # Invalidate overlay cache because label color changed
-        self.image_view.overlay_cache_valid = False
+        # Invalidate base overlay because label color changed (affects finalized segments)
+        self.image_view.invalidate_base_overlay()
         self.image_view.update_display()
         self.image_view.update()
 
